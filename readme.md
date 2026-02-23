@@ -148,8 +148,8 @@ n0dm creates a `~/.gitignore` file during `init` with this pattern:
 
 | Do ✅ | Don't ❌ |
 |-------|---------|
-| `yadm add ~/.bashrc` — explicit files | `yadm add -A` — adds EVERYTHING |
-| `yadm add ~/.config/nvim/` — specific dirs | `yadm add .` — adds from root |
+| `n0dm add ~/.bashrc` — explicit files | `n0dm add -A` — adds EVERYTHING |
+| `n0dm add ~/.config/nvim/` — specific dirs | `n0dm add .` — adds from root |
 | Create `~/.gitignore` first | Skip the ignore file |
 | Commit `.gitignore` first | Add files before `.gitignore` |
 
@@ -160,12 +160,12 @@ n0dm creates a `~/.gitignore` file during `init` with this pattern:
 n0dm init
 
 # 2. Add .gitignore FIRST and commit it
-yadm add ~/.gitignore
-yadm commit -m "Add .gitignore"
+n0dm add ~/.gitignore
+n0dm commit -m "Add .gitignore"
 
 # 3. Now add your dotfiles explicitly
-yadm add ~/.bashrc ~/.zshrc ~/.gitconfig
-yadm add ~/.config/kitty/ ~/.config/nvim/
+n0dm add ~/.bashrc ~/.zshrc ~/.gitconfig
+n0dm add ~/.config/kitty/ ~/.config/nvim/
 
 # 4. Sync to GitHub
 n0dm sync "Initial dotfiles"
@@ -175,13 +175,13 @@ n0dm sync "Initial dotfiles"
 
 ```bash
 # See staged files before committing
-yadm status --short
+n0dm status --short
 
 # List all tracked files
-yadm list
+n0dm list
 
 # See untracked files (what would be added with -A)
-yadm status -u
+n0dm status -u
 ```
 
 ### 🚫 Common Files to Ignore
