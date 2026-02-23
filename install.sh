@@ -119,7 +119,7 @@ show_next_steps() {
     echo -e "     ${CYAN}n0dm sync \"Initial commit\"${RESET}"
     echo
     echo -e "${BOLD}Help:${RESET}"
-    echo "  - Run ${CYAN}n0dm help${RESET} for all commands"
+    echo -e "  - Run ${CYAN}n0dm help${RESET} for all commands"
     echo "  - Visit: https://github.com/noeltz/n0dm"
     echo
 }
