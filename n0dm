@@ -128,7 +128,10 @@ create_backup() {
     # Use git archive to export tracked files cleanly
     cd "$HOME"
     git --git-dir="$yadm_git_dir" --work-tree="$HOME" ls-files -z | \
-        xargs -0 -I{} sh -c 'mkdir -p "$(dirname "$backup_dir/{}")" && cp -a "{}" "$backup_dir/{}"'
+        while IFS= read -r -d '' file; do
+            mkdir -p "$backup_dir/$(dirname "$file")"
+            cp -a "$file" "$backup_dir/$file"
+        done
     
     # Store metadata
     cat > "${backup_dir}/.n0dm-meta" <<EOF
@@ -208,27 +211,30 @@ restore_backup() {
 
 cleanup_backups() {
     [[ ! -d "$N0DM_BACKUP_DIR" ]] && return 0
-    
+
     local now; now=$(epoch_time)
     local retention_secs=$((BACKUP_RETENTION_DAYS * 86400))
     local count=0 removed=0
-    
+
     # Sort by name (timestamp) descending, keep newest MAX_BACKUPS
     find "$N0DM_BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -r | while read -r backup; do
-        ((count++))
+        count=$((count + 1))
         local backup_path="${N0DM_BACKUP_DIR}/${backup}"
         local backup_time; backup_time=$(stat -c %Y "$backup_path" 2>/dev/null || echo 0)
         local age=$((now - backup_time))
-        
+
         # Remove if too old OR beyond max count
         if ((age > retention_secs)) || ((count > MAX_BACKUPS)); then
             rm -rf "$backup_path"
             print_info "Removed old backup: $backup"
-            ((removed++))
+            removed=$((removed + 1))
         fi
     done
-    
-    [[ $removed -gt 0 ]] && print_ok "Cleanup: removed $removed backup(s)"
+
+    if [[ $removed -gt 0 ]]; then
+        print_ok "Cleanup: removed $removed backup(s)"
+    fi
+    return 0
 }
 
 #--- Safe Sync Wrapper with Smart Backup ---------------------------------------
@@ -236,13 +242,21 @@ n0dm_safe_sync() {
     local message="${1:-Auto-sync}"
     local no_backup="${2:-false}"
     local dry_run="${3:-false}"
-    
+    local force="${4:-false}"
+    local yadm_git_dir; yadm_git_dir=$(get_yadm_git_dir)
+
     # Check yadm is initialized
     if ! yadm status &>/dev/null; then
         print_err "Yadm not initialized. Run 'n0dm init' first."
         return 1
     fi
-    
+
+    # Check for remote
+    if ! yadm remote get-url origin &>/dev/null; then
+        print_err "No remote configured. Run 'n0dm connect' first."
+        return 1
+    fi
+
     # Smart backup: only create if tracked files changed AND backup not disabled
     if [[ "$no_backup" != "true" && "$dry_run" != "true" ]]; then
         if needs_smart_backup; then
@@ -252,7 +266,7 @@ n0dm_safe_sync() {
             print_info "No changes in tracked files, skipping backup"
         fi
     fi
-    
+
     # Dry run mode
     if [[ "$dry_run" == "true" ]]; then
         print_info "=== DRY RUN ==="
@@ -260,36 +274,79 @@ n0dm_safe_sync() {
         print_info "=== END DRY RUN ==="
         return 0
     fi
-    
-    # Pull with conflict detection
-    print_info "Pulling remote changes..."
-    if ! yadm pull --ff-only 2>/dev/null; then
-        print_warn "Fast-forward pull failed. Checking for conflicts..."
-        if yadm merge --no-commit --no-ff origin/$(yadm branch --show-current) 2>&1 | grep -q "CONFLICT"; then
-            print_err "Merge conflicts detected!"
-            print_info "Resolve with: n0dm mergetool"
-            print_info "Then run: n0dm sync to complete"
-            return 1
-        fi
-    fi
-    
-    # Commit local changes if any
+
+    # Commit local changes first (if any)
     if [[ -n "$(yadm status --porcelain)" ]]; then
         print_info "Committing local changes..."
         yadm add -A
         yadm commit -m "$message" || print_warn "Nothing to commit"
     fi
-    
+
+    # Check if we have any commits
+    local commit_count
+    commit_count=$(git --git-dir="$yadm_git_dir" rev-list --count HEAD 2>/dev/null || echo "0")
+
+    if [[ "$commit_count" -eq 0 ]]; then
+        print_err "No commits yet. Add files with 'n0dm add <file>' and commit first."
+        return 1
+    fi
+
+    # Pull with conflict detection (skip on first push)
+    local has_upstream
+    has_upstream=$(git --git-dir="$yadm_git_dir" rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || echo "")
+
+    if [[ -n "$has_upstream" ]]; then
+        print_info "Pulling remote changes..."
+        if ! yadm pull --ff-only 2>/dev/null; then
+            print_warn "Fast-forward pull failed. Checking for conflicts..."
+            if yadm merge --no-commit --no-ff origin/$(yadm branch --show-current) 2>&1 | grep -q "CONFLICT"; then
+                print_err "Merge conflicts detected!"
+                print_info "Resolve with: n0dm mergetool"
+                print_info "Then run: n0dm sync to complete"
+                return 1
+            fi
+        fi
+    fi
+
     # Push
-    if yadm remote get-url origin &>/dev/null; then
-        print_info "Pushing to remote..."
-        yadm push || {
+    print_info "Pushing to remote..."
+    if [[ -z "$has_upstream" ]]; then
+        # First push - set upstream
+        local push_output push_status=0
+        local force_flag=""
+        [[ "$force" == "true" ]] && force_flag="--force"
+        push_output=$(yadm push $force_flag --set-upstream origin "$(yadm branch --show-current)" 2>&1) || push_status=$?
+        if [[ $push_status -ne 0 ]]; then
+            # Check if it's a "repository not found" error
+            if echo "$push_output" | grep -qi "not found"; then
+                print_err "Push failed. The remote repository may not exist yet."
+                print_info "Create it on GitHub:"
+                local remote_url
+                remote_url=$(git --git-dir="$yadm_git_dir" remote get-url origin 2>/dev/null)
+                local repo_name
+                repo_name=$(echo "$remote_url" | sed 's|.*/\([^/]*\)\.git$|\1|' | sed 's|^git@github\.com:||')
+                echo "  gh repo create $repo_name --public --push"
+                echo "Or visit: $remote_url"
+            elif echo "$push_output" | grep -qi "rejected"; then
+                print_warn "Remote has different history (e.g., README from GitHub)."
+                print_info "Options:"
+                echo "  1. Pull and merge: n0dm pull --rebase && n0dm sync"
+                echo "  2. Overwrite remote: n0dm sync --force"
+            else
+                print_err "Push failed:"
+                echo "$push_output"
+            fi
+            return 1
+        fi
+    else
+        if ! yadm push 2>&1; then
             print_err "Push failed. Your changes are committed locally."
             return 1
-        }
-        print_ok "Sync complete!"
+        fi
     fi
-    
+
+    print_ok "Sync complete!"
+
     # Post-sync cleanup (always run to maintain retention)
     cleanup_backups
     return 0
@@ -325,9 +382,10 @@ n0dm_connect() {
     if [[ -n "$existing_remote" ]]; then
         print_warn "Remote already configured: $existing_remote"
         if [[ "${N0DM_YES:-false}" != "true" ]]; then
-            read -p "Replace it? [y/N] " -n 1 -r
+            read -p "Replace it? [y/N] " -n 1 -r confirm
+            read -r _ || true
             echo
-            [[ $REPLY =~ ^[Yy]$ ]] || { print_info "Keeping existing remote"; return 0; }
+            [[ $confirm =~ ^[Yy]$ ]] || { print_info "Keeping existing remote"; return 0; }
         fi
     fi
 
@@ -387,13 +445,78 @@ n0dm_init() {
 
     print_ok "Local repository initialized"
 
+    # Create .n0domignore if it doesn't exist
+    if [[ ! -f "$HOME/.n0domignore" ]]; then
+        print_info "Creating default .n0domignore..."
+        cat > "$HOME/.n0domignore" <<'IGNORE_EOF'
+# Package caches
+.bun/
+.npm/
+.pnpm/
+.yarn/
+.node-gyp/
+.cache/
+.thumbnails/
+node_modules/
+
+# AUR builds
+.cache/paru/
+.cache/yay/
+
+# Downloads and media
+Downloads/
+Pictures/
+Videos/
+Music/
+Public/
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# IDE configs
+.vscode/
+.idea/
+
+# Container configs
+.docker/
+.minikube/
+
+# Large binaries
+*.iso
+*.img
+*.tar.gz
+*.zip
+
+# Development directories
+dev/
+code/
+projects/
+
+# Machine-specific configs
+.config/pulse/
+.config/pipewire/
+.local/share/Trash/
+
+# See https://github.com/noeltz/n0dm/blob/main/.n0domignore for full template
+IGNORE_EOF
+        print_ok "Created ~/.n0domignore with sensible defaults"
+    fi
+
     # Prompt for remote setup
     if [[ "${N0DM_YES:-false}" != "true" ]]; then
         echo
         print_info "Connect to a GitHub repository for backup and sync?"
-        read -p "Set up remote? [Y/n] " -n 1 -r
+        read -p "Set up remote? [Y/n] " -n 1 -r confirm
+        # Consume the newline left in buffer
+        read -r _ || true
         echo
-        if [[ $REPLY =~ ^[Yy]$ || $REPLY == "" ]]; then
+        if [[ $confirm =~ ^[Yy]$ || "$confirm" == "" ]]; then
             echo
             print_info "Enter your GitHub repository"
             echo "  Format: username/repo  (e.g., alice/dotfiles)"
@@ -419,9 +542,9 @@ n0dm_init() {
                 print_ok "Remote configured: $remote_url"
                 echo
                 print_info "Next steps:"
-                echo "  1. Create the repository on GitHub if it doesn't exist:"
-                echo "     gh repo create ${repo%.git} --public --source=. --push"
-                echo "  2. Or push manually: n0dm push -u origin"
+                echo "  1. Create the repository on GitHub:"
+                echo "     gh repo create ${repo} --public --push"
+                echo "  2. Then run: n0dm sync \"Initial commit\""
             else
                 print_info "Skipping remote setup. Use 'n0dm connect' later."
             fi
@@ -582,6 +705,7 @@ ${BOLD}Options (for sync):${RESET}
   --dry-run                 Show what would be done
   --yes                     Auto-confirm prompts (for automation)
   --verbose                 Show detailed sync analysis
+  --force                   Force push (overwrite remote on first sync)
 
 ${BOLD}Environment Variables:${RESET}
   N0DM_MAX_BACKUPS          Max backups to keep (default: 10)
@@ -625,30 +749,31 @@ main() {
     load_config
     
     # Parse global flags first
-    local no_backup=false dry_run=false yes_mode=false verbose=false
+    local no_backup=false dry_run=false yes_mode=false verbose=false force=false
     local args=()
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --no-backup) no_backup=true; shift ;;
             --dry-run) dry_run=true; shift ;;
             --yes) yes_mode=true; export N0DM_YES=true; shift ;;
             --verbose) verbose=true; shift ;;
+            --force) force=true; shift ;;
             -*) args+=("$1"); shift ;;
             *) args+=("$1"); shift ;;
         esac
     done
-    
+
     set -- "${args[@]}"
     local cmd="${1:-help}"; shift || true
-    
+
     case "$cmd" in
         #--- Enhanced N0DM Commands ---
         init)
             n0dm_init "$@"
             ;;
         sync)
-            n0dm_safe_sync "${1:-Auto-sync}" "$no_backup" "$dry_run"
+            n0dm_safe_sync "${1:-Auto-sync}" "$no_backup" "$dry_run" "$force"
             ;;
         backup)
             create_backup "${1:-manual}"

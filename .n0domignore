@@ -1,0 +1,234 @@
+# =============================================================================
+# N0DM Ignore File - Like .gitignore for your dotfiles
+# =============================================================================
+# This file should be placed at ~/.n0domignore (in your home directory)
+# Files matching these patterns will NOT be tracked by n0dm/yadm
+# =============================================================================
+
+#--- Package Managers & Caches -------------------------------------------------
+.bun/
+.npm/
+.pnpm/
+.yarn/
+.node-gyp/
+.cargo/
+.rustup/
+.go/
+.gradle/
+.maven/
+.sbt/
+.composer/
+.mix/
+.elm/
+.purescript/
+
+#--- Application Caches --------------------------------------------------------
+.cache/
+.thumbnails/
+.mozilla/firefox/*/cache/
+.mozilla/firefox/*/OfflineCache/
+.chromium/Cache/
+.google/chrome/Default/Cache/
+.code-cache/
+.vim/pack/*/opt/
+.vim/plugged/
+.nvim/pack/*/opt/
+.nvim/lazy/
+.local/share/pip/
+.local/share/virtualenvs/
+.conda/
+.env/
+.venv/
+venv/
+node_modules/
+
+#--- AUR & Package Build Directories -------------------------------------------
+.cache/paru/
+.cache/yay/
+.trizen-packages/
+.aurman/
+
+#--- Download & Media Folders --------------------------------------------------
+Downloads/
+Uploads/
+Pictures/
+Videos/
+Music/
+Public/
+
+#--- Temporary Files -----------------------------------------------------------
+.tmp/
+tmp/
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.cache
+
+#--- Logs & History ------------------------------------------------------------
+*.log
+.history/
+.sqlite_history
+.mysql_history
+.python_history
+.ruby_history
+.zcompdump*
+.zsh_history
+.bash_history
+.Spotlight-V100
+.Trashes
+
+#--- IDE & Editor Config (project-specific, not dotfiles) ----------------------
+.vscode/
+.idea/
+.project
+.classpath
+*.sublime-workspace
+*.sublime-project
+
+#--- Container & VM Config -----------------------------------------------------
+.docker/
+.minikube/
+.vagrant.d/
+.virtualbox/
+.vmware/
+.libvirt/
+
+#--- Game Launchers & ROMs -----------------------------------------------------
+.steam/
+.heroic/
+.lutris/
+.retroarch/
+roms/
+
+#--- Large Binary Files --------------------------------------------------------
+*.iso
+*.img
+*.vdi
+*.vmdk
+*.qcow2
+*.tar
+*.tar.gz
+*.tar.bz2
+*.zip
+*.rar
+*.7z
+
+#--- Development Project Directories -------------------------------------------
+dev/
+code/
+projects/
+src/
+workspace/
+
+#--- System Files --------------------------------------------------------------
+.gtk-bookmarks
+.recently-used.xbel
+.Xauthority
+.Xresources
+.ICEauthority
+.DMRC
+.config/user-dirs.dirs
+.config/user-dirs.locale
+
+#--- Application Data (too large or machine-specific) --------------------------
+.local/share/Trash/
+.local/share/baloo/
+.local/share/akonadi/
+.local/share/kioexec/
+.local/share/ksqlsheet/
+.local/share/okular/
+.local/share/plasma/
+.local/share/kscreen/
+.local/share/kxmlgui5/
+.local/share/kactivitymanagerd/
+.local/share/krunner/
+.local/share/solid/
+.local/share/kwalletd/
+.local/share/konsole/
+.local/share/dolphin/
+.local/share/filezilla/
+.local/share/Steam/
+.local/share/steam/
+.local/share/discord/
+.local/share/Signal/
+.local/share/TelegramDesktop/
+.local/share/Slack/
+.local/share/keyrings/
+.local/share/gvfs-metadata/
+.local/share/nvim/lazy/
+.local/share/nvim/mason/
+.local/share/nvim/lsp/
+.local/share/nvim/lazyvim/
+.local/share/Trash/
+.local/state/wireguard/
+.local/state/fish/
+.local/state/zsh/
+.local/state/bash/
+.pki/
+.gnupg/private-keys-v1.d/
+
+#--- SSH & GPG (security - manage separately) ----------------------------------
+# Uncomment if you don't want to sync these
+# .ssh/
+# .gnupg/
+
+#--- Machine-Specific Config ---------------------------------------------------
+# These often contain machine-specific paths
+.config/pulse/
+.config/pipewire/
+.config/alsa/
+.config/i3/config.local
+.config/sway/config.local
+.config/polybar/config.local
+.config/rofi/config.rasi.local
+
+#--- Database Files ------------------------------------------------------------
+*.db
+*.sqlite
+*.sqlite3
+
+#--- Font Cache ----------------------------------------------------------------
+.fontconfig/
+.local/share/fonts/
+.cache/fontconfig/
+
+#--- Thumbnail Cache -----------------------------------------------------------
+.thumbnails/
+.cache/thumbnails/
+
+#--- Web Browser Data (large, machine-specific) --------------------------------
+.mozilla/firefox/*.default*/storage/
+.mozilla/firefox/*.default*/cache2/
+.google/chrome/Profile*/Cache/
+.google/chrome/Profile*/Code Cache/
+.google/chrome/Profile*/GPUCache/
+.chromium/Profile*/Cache/
+.chromium/Profile*/Code Cache/
+.brave/Profile*/Cache/
+.firefox/Profile*/storage/
+
+#--- Email Clients (large data) ------------------------------------------------
+.thunderbird/
+.evolution/
+.geary/
+
+#--- Torrent Clients -----------------------------------------------------------
+.transmission/
+.qbittorrent/
+.deluge/
+
+#--- Notes & Documents (keep in separate repo) ---------------------------------
+Documents/
+Notes/
+Obsidian/
+Logseq/
+
+#--- Screenshots ---------------------------------------------------------------
+Pictures/Screenshots/
+.screenshots/
+
+#--- Dotfiles Manager Files ----------------------------------------------------
+.n0domignore
+.n0dm/
