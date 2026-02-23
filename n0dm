@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #===============================================================================
 # N0DM - Enhanced Yadm Wrapper for Arch Linux
-# Version: 1.3.0
+# Version: 1.3.1
 # Combines Yadm's reliability with smart backups and safety features
 #===============================================================================
 set -euo pipefail
 
 #--- Configuration -------------------------------------------------------------
-readonly N0DM_VERSION="1.3.0"
+readonly N0DM_VERSION="1.3.1"
 readonly N0DM_UPDATE_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm"
 readonly N0DM_DATA_DIR="${HOME}/.local/share/n0dm"
 readonly N0DM_BACKUP_DIR="${N0DM_DATA_DIR}/backups"
@@ -249,6 +249,11 @@ n0dm_safe_sync() {
     if ! yadm status &>/dev/null; then
         print_err "Yadm not initialized. Run 'n0dm init' first."
         return 1
+    fi
+
+    # Ensure .gitignore exists in yadm repo (copied from .n0dmignore)
+    if [[ -f "$HOME/.n0dmignore" ]]; then
+        cp "$HOME/.n0dmignore" "$HOME/.gitignore"
     fi
 
     # Check for remote
@@ -506,6 +511,12 @@ projects/
 # See https://github.com/noeltz/n0dm/blob/main/.n0dmignore for full template
 IGNORE_EOF
         print_ok "Created ~/.n0dmignore with sensible defaults"
+    fi
+
+    # Copy .n0dmignore to yadm repo as .gitignore (yadm uses .gitignore)
+    if [[ -f "$HOME/.n0dmignore" ]]; then
+        cp "$HOME/.n0dmignore" "$HOME/.gitignore"
+        print_info "Copied .n0dmignore to .gitignore for yadm"
     fi
 
     # Prompt for remote setup
