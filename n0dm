@@ -276,9 +276,13 @@ n0dm_safe_sync() {
     fi
 
     # Commit local changes first (if any)
-    if [[ -n "$(yadm status --porcelain)" ]]; then
+    # Check for both staged and unstaged changes
+    local has_changes
+    has_changes=$(yadm status --porcelain 2>/dev/null)
+    if [[ -n "$has_changes" ]]; then
         print_info "Committing local changes..."
-        yadm add -A
+        # Only add unstaged changes, preserve staged changes (like removals)
+        yadm add -u
         yadm commit -m "$message" || print_warn "Nothing to commit"
     fi
 
@@ -637,8 +641,12 @@ n0dm_untrack() {
     # Run yadm rm from HOME directory so relative paths work
     (cd "$HOME" && yadm rm --cached "${files[@]}")
     print_ok "Untracked: ${files[*]}"
-    print_info "Files remain in your home directory but won't be synced."
-    print_info "Run 'n0dm sync' to commit this change"
+    print_info "Files remain in your home directory but will be removed from remote on next sync."
+    
+    # Auto-commit the removal
+    print_info "Committing removal..."
+    (cd "$HOME" && yadm commit -m "n0dm untrack: ${files[*]}") || print_warn "Nothing to commit (file was not previously committed)"
+    print_info "Run 'n0dm sync' to push this change to remote"
 }
 
 #--- Yadm Passthrough (ALL native commands) ------------------------------------
