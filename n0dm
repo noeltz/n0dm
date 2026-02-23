@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #===============================================================================
 # N0DM - Enhanced Yadm Wrapper for Arch Linux
-# Version: 1.4.1
+# Version: 1.5.0
 # Combines Yadm's reliability with smart backups and safety features
 #===============================================================================
 set -euo pipefail
 
 #--- Configuration -------------------------------------------------------------
-readonly N0DM_VERSION="1.4.1"
+readonly N0DM_VERSION="1.5.0"
 readonly N0DM_UPDATE_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm"
 readonly N0DM_DATA_DIR="${HOME}/.local/share/n0dm"
 readonly N0DM_BACKUP_DIR="${N0DM_DATA_DIR}/backups"
@@ -237,13 +237,71 @@ cleanup_backups() {
     return 0
 }
 
+#--- Auto-Commit Message Generator ---------------------------------------------
+generate_commit_message() {
+    local yadm_git_dir; yadm_git_dir=$(get_yadm_git_dir)
+    
+    # Get summary of changes
+    local stats
+    stats=$(cd "$HOME" && git --git-dir="$yadm_git_dir" --work-tree="$HOME" diff --stat --shortstat 2>/dev/null || echo "")
+    
+    # Get list of changed files (max 5, then show "+N more")
+    local files
+    files=$(cd "$HOME" && git --git-dir="$yadm_git_dir" --work-tree="$HOME" diff --name-only --diff-filter=ACMRT 2>/dev/null | head -5 | xargs -0 basename -a 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+    
+    if [[ -z "$stats" && -z "$files" ]]; then
+        echo "Sync"
+        return
+    fi
+    
+    # Parse the shortstat to get counts
+    local added=0 removed=0 modified=0
+    if [[ "$stats" =~ ([0-9]+)\ addition ]]; then
+        added="${BASH_REMATCH[1]}"
+    fi
+    if [[ "$stats" =~ ([0-9]+)\ deletion ]]; then
+        removed="${BASH_REMATCH[1]}"
+    fi
+    if [[ "$stats" =~ ([0-9]+)\ file? ]]; then
+        modified="${BASH_REMATCH[1]}"
+    fi
+    
+    # Build message
+    local msg=""
+    if [[ -n "$files" ]]; then
+        msg="$files"
+    fi
+    
+    # Add counts if we have them
+    if [[ -n "$added" || -n "$removed" ]]; then
+        local counts=()
+        [[ "$added" -gt 0 ]] && counts+=("+$added")
+        [[ "$removed" -gt 0 ]] && counts+=("-$removed")
+        if [[ ${#counts[@]} -gt 0 ]]; then
+            [[ -n "$msg" ]] && msg+=" "
+            msg+="[${counts[*]}]"
+        fi
+    fi
+    
+    if [[ -n "$msg" ]]; then
+        echo "$msg"
+    else
+        echo "Sync"
+    fi
+}
+
 #--- Safe Sync Wrapper with Smart Backup ---------------------------------------
 n0dm_safe_sync() {
-    local message="${1:-Auto-sync}"
+    local message="${1:-}"
     local no_backup="${2:-false}"
     local dry_run="${3:-false}"
     local force="${4:-false}"
     local yadm_git_dir; yadm_git_dir=$(get_yadm_git_dir)
+    
+    # Auto-generate message if not provided
+    if [[ -z "$message" ]]; then
+        message=$(generate_commit_message)
+    fi
 
     # Check yadm is initialized
     if ! yadm status &>/dev/null; then
@@ -624,6 +682,132 @@ n0dm_clone() {
     print_info "Run 'n0dm status' to see the repository state"
 }
 
+#--- Schedule: Systemd Timer Setup ---------------------------------------------
+n0dm_schedule() {
+    local action="${1:-}"
+    local frequency="${2:-hourly}"
+    local service_dir="$HOME/.config/systemd/user"
+    local timer_file="$service_dir/n0dm-sync.timer"
+    local service_file="$service_dir/n0dm-sync.service"
+    
+    # Check if systemd is available
+    if ! command -v systemctl &>/dev/null; then
+        print_err "systemd is not available on this system"
+        return 1
+    fi
+    
+    # Handle different actions
+    case "$action" in
+        off|disable|stop)
+            print_info "Disabling auto-sync timer..."
+            systemctl --user stop n0dm-sync.timer 2>/dev/null || true
+            systemctl --user disable n0dm-sync.timer 2>/dev/null || true
+            print_ok "Auto-sync disabled"
+            return 0
+            ;;
+        status)
+            if systemctl --user is-enabled n0dm-sync.timer &>/dev/null; then
+                print_info "Auto-sync is enabled"
+                systemctl --user status n0dm-sync.timer --no-pager || true
+            else
+                print_warn "Auto-sync is not enabled"
+                print_info "Run 'n0dm schedule' to enable it"
+            fi
+            return 0
+            ;;
+        ""|-h|--help|help)
+            echo "Usage: n0dm schedule [action] [frequency]"
+            echo ""
+            echo "Actions:"
+            echo "  (none)     Enable auto-sync (default: hourly)"
+            echo "  hourly     Enable hourly sync"
+            echo "  daily      Enable daily sync"
+            echo "  weekly     Enable weekly sync"
+            echo "  off        Disable auto-sync"
+            echo "  status     Check if auto-sync is enabled"
+            echo ""
+            echo "Examples:"
+            echo "  n0dm schedule           # Enable hourly auto-sync"
+            echo "  n0dm schedule daily     # Enable daily sync"
+            echo "  n0dm schedule off       # Disable auto-sync"
+            return 0
+            ;;
+    esac
+    
+    # Determine frequency
+    case "$action" in
+        hourly) frequency="hourly" ;;
+        daily) frequency="daily" ;;
+        weekly) frequency="weekly" ;;
+        *)
+            # If first arg is not a valid action, treat it as frequency
+            if [[ "$action" =~ ^(hourly|daily|weekly)$ ]]; then
+                frequency="$action"
+            else
+                frequency="hourly"
+            fi
+            ;;
+    esac
+    
+    # Set interval based on frequency
+    local interval
+    case "$frequency" in
+        hourly)
+            interval="OnBootSec=5min\nOnUnitActiveSec=60min"
+            ;;
+        daily)
+            interval="OnBootSec=10min\nOnUnitActiveSec=1d"
+            ;;
+        weekly)
+            interval="OnBootSec=10min\nOnUnitActiveSec=1w"
+            ;;
+    esac
+    
+    # Create service directory
+    mkdir -p "$service_dir"
+    
+    # Create service file
+    cat > "$service_file" <<EOF
+[Unit]
+Description=N0DM Smart Sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${HOME}/.local/bin/n0dm sync --yes --no-backup
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+EOF
+    
+    # Create timer file
+    cat > "$timer_file" <<EOF
+[Unit]
+Description=N0DM Auto-Sync Timer ($frequency)
+
+[Timer]
+$interval
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+    
+    print_info "Created systemd timer: $frequency"
+    
+    # Reload and enable
+    print_info "Enabling timer..."
+    systemctl --user daemon-reload
+    systemctl --user enable --now n0dm-sync.timer
+    
+    if systemctl --user is-enabled n0dm-sync.timer &>/dev/null; then
+        print_ok "Auto-sync enabled ($frequency)"
+        print_info "Next sync will happen in the background"
+    else
+        print_err "Failed to enable timer"
+        return 1
+    fi
+}
+
 #--- Atomic Self-Update --------------------------------------------------------
 self_update() {
     print_info "Checking for updates..."
@@ -866,7 +1050,8 @@ ${BOLD}Enhanced Commands (N0DM specific):${RESET}
   connect [repo]            Connect to GitHub remote (e.g., user/repo)
   track <file> [files...]   Add files to tracking (wraps yadm add)
   untrack <file> [files...] Remove from tracking, keep file (wraps yadm rm --cached)
-  sync [message]            Safe sync with SMART backup: pull → commit → push
+  sync [message]            Safe sync with SMART backup: auto-generates commit message
+  schedule [freq]           Enable auto-sync timer (hourly/daily/weekly/off/status)
   backup [label]            Create manual backup of tracked files
   restore <id>              Restore from n0dm backup (use 'backups' to see IDs)
   backups                   List available n0dm backups
@@ -894,6 +1079,7 @@ ${BOLD}Options (for sync):${RESET}
   --yes                     Auto-confirm prompts (for automation)
   --verbose                 Show detailed sync analysis
   --force                   Force push (overwrite remote on first sync)
+  (no message)              Auto-generates commit message from git diff
 
 ${BOLD}Environment Variables:${RESET}
   N0DM_MAX_BACKUPS          Max backups to keep (default: 10)
@@ -912,8 +1098,12 @@ ${BOLD}Examples:${RESET}
   n0dm clone noeltz/n0ctachiri -f      # Force clone (overwrite local)
   n0dm track ~/.bashrc                   # Add file to tracking
   n0dm untrack ~/.cache/file             # Remove from tracking (keep file)
-  n0dm sync "Update config"              # Safe sync with smart backup
+  n0dm sync                              # Safe sync (auto-generates commit message)
+  n0dm sync "Update config"              # Safe sync with custom message
   n0dm sync --dry-run                    # Preview changes
+  n0dm schedule hourly                   # Enable hourly auto-sync
+  n0dm schedule daily                    # Enable daily auto-sync
+  n0dm schedule off                      # Disable auto-sync
   n0dm backup "before-vim-upgrade"       # Manual backup
   n0dm backups                           # List all backups
   n0dm restore 20260223_143022_pre-sync  # Restore from backup
@@ -925,8 +1115,14 @@ ${BOLD}Examples:${RESET}
   n0dm yadm-restore .bashrc              # Access native yadm restore
 
 ${BOLD}Automation:${RESET}
-  # Systemd: n0dm sync --yes --no-backup "Auto"
-  # Pacman hook: n0dm sync --yes --no-backup "Post-upgrade"
+  # Auto-sync timer (recommended):
+  n0dm schedule hourly                   # Sync hourly
+  n0dm schedule daily                    # Sync daily
+  n0dm schedule status                   # Check timer status
+  n0dm schedule off                      # Disable auto-sync
+
+  # Pacman hook (system-wide):
+  # Requires manual setup - see README
   # Cron: 0 * * * * /home/user/.local/bin/n0dm sync --yes --no-backup
 EOF
 )
@@ -1023,6 +1219,9 @@ main() {
             ;;
         connect)
             n0dm_connect "$@"
+            ;;
+        schedule)
+            n0dm_schedule "$@"
             ;;
         #--- All other commands: Full passthrough to Yadm ---
         *)
