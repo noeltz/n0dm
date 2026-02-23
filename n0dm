@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #===============================================================================
 # N0DM - Enhanced Yadm Wrapper for Arch Linux
-# Version: 1.1.0
+# Version: 1.2.0
 # Combines Yadm's reliability with smart backups and safety features
 #===============================================================================
 set -euo pipefail
 
 #--- Configuration -------------------------------------------------------------
-readonly N0DM_VERSION="1.1.0"
+readonly N0DM_VERSION="1.2.0"
 readonly N0DM_UPDATE_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm"
 readonly N0DM_DATA_DIR="${HOME}/.local/share/n0dm"
 readonly N0DM_BACKUP_DIR="${N0DM_DATA_DIR}/backups"
@@ -368,6 +368,69 @@ n0dm_connect() {
     echo "  2. Run: n0dm push -u origin"
 }
 
+#--- Enhanced Init with Remote Setup -------------------------------------------
+n0dm_init() {
+    local yadm_git_dir; yadm_git_dir=$(get_yadm_git_dir)
+
+    if [[ -d "$yadm_git_dir" ]]; then
+        print_warn "Yadm repository already exists at: $yadm_git_dir"
+        if [[ "${N0DM_YES:-false}" != "true" ]]; then
+            read -p "Re-initialize? This will not affect your files. [y/N] " -n 1 -r
+            echo
+            [[ $REPLY =~ ^[Yy]$ ]] || { print_info "Keeping existing repository"; return 0; }
+        fi
+    fi
+
+    # Run yadm init
+    print_info "Initializing yadm repository..."
+    yadm init -f 2>/dev/null || yadm init
+
+    print_ok "Local repository initialized"
+
+    # Prompt for remote setup
+    if [[ "${N0DM_YES:-false}" != "true" ]]; then
+        echo
+        print_info "Connect to a GitHub repository for backup and sync?"
+        read -p "Set up remote? [Y/n] " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ || $REPLY == "" ]]; then
+            echo
+            print_info "Enter your GitHub repository"
+            echo "  Format: username/repo  (e.g., alice/dotfiles)"
+            echo
+            read -p "Repository: " -r repo
+
+            if [[ -n "$repo" ]]; then
+                local remote_url
+                if [[ "$repo" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$ ]]; then
+                    remote_url="https://github.com/${repo}.git"
+                elif [[ "$repo" =~ ^git@github\.com: ]]; then
+                    remote_url="$repo"
+                elif [[ "$repo" =~ ^https?:// ]]; then
+                    remote_url="$repo"
+                else
+                    print_err "Invalid format, skipping remote setup"
+                    return 0
+                fi
+
+                git --git-dir="$yadm_git_dir" remote add origin "$remote_url" 2>/dev/null || \
+                    git --git-dir="$yadm_git_dir" remote set-url origin "$remote_url"
+
+                print_ok "Remote configured: $remote_url"
+                echo
+                print_info "Next steps:"
+                echo "  1. Create the repository on GitHub if it doesn't exist:"
+                echo "     gh repo create ${repo%.git} --public --source=. --push"
+                echo "  2. Or push manually: n0dm push -u origin"
+            else
+                print_info "Skipping remote setup. Use 'n0dm connect' later."
+            fi
+        fi
+    fi
+
+    print_info "Run 'n0dm status' to see repository state"
+}
+
 #--- Atomic Self-Update --------------------------------------------------------
 self_update() {
     print_info "Checking for updates..."
@@ -490,6 +553,8 @@ ${BOLD}N0DM v${N0DM_VERSION}${RESET} - Enhanced Yadm Wrapper for Arch Linux
 ${BOLD}Usage:${RESET} n0dm <command> [options]
 
 ${BOLD}Enhanced Commands (N0DM specific):${RESET}
+  init                      Initialize repo + optional GitHub remote setup
+  connect [repo]            Connect to GitHub remote (e.g., user/repo)
   sync [message]            Safe sync with SMART backup: pull → commit → push
   backup [label]            Create manual backup of tracked files
   restore <id>              Restore from n0dm backup (use 'backups' to see IDs)
@@ -497,7 +562,6 @@ ${BOLD}Enhanced Commands (N0DM specific):${RESET}
   cleanup                   Remove old backups per retention policy
   conflicts                 Check for unresolved merge conflicts
   status                    Show yadm status + n0dm backup info
-  connect [repo]            Connect to GitHub remote (e.g., user/repo)
   update                    Check for and install n0dm updates
   mergetool                 Launch configured merge tool for conflicts
 
@@ -580,6 +644,9 @@ main() {
     
     case "$cmd" in
         #--- Enhanced N0DM Commands ---
+        init)
+            n0dm_init "$@"
+            ;;
         sync)
             n0dm_safe_sync "${1:-Auto-sync}" "$no_backup" "$dry_run"
             ;;
