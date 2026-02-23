@@ -604,7 +604,8 @@ n0dm_track() {
     done
 
     print_info "Tracking ${#files[@]} file(s)..."
-    yadm add "${files[@]}"
+    # Run yadm add from HOME directory so relative paths work
+    (cd "$HOME" && yadm add "${files[@]}")
     print_ok "Added to tracking: ${files[*]}"
     print_info "Run 'n0dm sync' to commit and push"
 }
@@ -633,7 +634,8 @@ n0dm_untrack() {
     done
 
     print_info "Removing from tracking (keeping files in place)..."
-    yadm rm --cached "${files[@]}"
+    # Run yadm rm from HOME directory so relative paths work
+    (cd "$HOME" && yadm rm --cached "${files[@]}")
     print_ok "Untracked: ${files[*]}"
     print_info "Files remain in your home directory but won't be synced."
     print_info "Run 'n0dm sync' to commit this change"
