@@ -116,7 +116,7 @@ n0dm status
 ### 5️⃣ Sync to GitHub
 
 ```bash
-# One command to commit + push + backup
+# One command to commit + push + backup (auto-generates meaningful messages!)
 n0dm sync "Added my bashrc"
 ```
 
@@ -273,8 +273,19 @@ Public/
 | `n0dm clone <repo>` | Restore dotfiles from GitHub | `n0dm clone alice/dotfiles` |
 | `n0dm track <file>` | Add a file to version control | `n0dm track ~/.vimrc` |
 | `n0dm untrack <file>` | Remove from tracking (keeps file) | `n0dm untrack ~/.cache/file` |
-| `n0dm sync [message]` | **Smart sync**: backup → pull → commit → push | `n0dm sync "Updated aliases"` |
+| `n0dm sync [message]` | **Smart sync**: auto-generates commit message, backup → pull → commit → push | `n0dm sync` or `n0dm sync "Updated aliases"` |
 | `n0dm status` | See what's tracked and if files are in sync | `n0dm status` |
+
+### 🔄 Automation & Scheduling
+
+| Command | What It Does | Example |
+|---------|-------------|---------|
+| `n0dm schedule [freq]` | Enable auto-sync timer (hourly/daily/weekly) | `n0dm schedule daily` |
+| `n0dm schedule status` | Check if auto-sync is enabled | `n0dm schedule status` |
+| `n0dm schedule off` | Disable auto-sync timer | `n0dm schedule off` |
+| `n0dm hook install` | Install pacman hook (needs sudo) | `sudo n0dm hook install` |
+| `n0dm hook status` | Check if pacman hook installed | `n0dm hook status` |
+| `n0dm hook uninstall` | Remove pacman hook | `sudo n0dm hook uninstall` |
 
 ### 💾 Backup & Restore
 
@@ -292,7 +303,7 @@ Public/
 | `n0dm diff [file]` | See differences between repo and home | `n0dm diff ~/.bashrc` |
 | `n0dm list` | List all tracked files *(passes through to yadm)* | `n0dm list` |
 | `n0dm conflicts` | Check for unresolved merge conflicts | `n0dm conflicts` |
-| `n0dm doctor` | Run diagnostics and fix common issues | `n0dm doctor` |
+| `n0dm health` | Run comprehensive health check | `n0dm health` |
 
 ### 🔄 All Git Commands Work Too!
 
@@ -368,67 +379,116 @@ graph LR
 
 ## 🤖 Automation: Set It and Forget It
 
-### 🔄 Auto-Sync After System Updates (Pacman Hook)
+### ⏰ Auto-Sync Timer (Recommended)
 
-Never forget to push your config changes after a system upgrade:
+Never forget to sync your dotfiles! Set up automatic syncing with one command:
 
-1. Create the hook file:
 ```bash
-sudo nano /etc/pacman.d/hooks/90-n0dm-sync.hook
+# Enable automatic sync
+n0dm schedule              # Hourly (default)
+n0dm schedule hourly     # Sync every hour
+n0dm schedule daily      # Sync once per day
+n0dm schedule weekly     # Sync once per week
 ```
 
-2. Paste this content:
-```ini
-[Trigger]
-Operation = Upgrade
-Type = Package
-Target = *
+**What happens:**
+- Creates systemd timer and service automatically
+- Runs `n0dm sync --yes` at your chosen interval
+- ✅ Automatically updates n0dm before each sync
+- ✅ Creates backups when files change
+- ✅ Sends desktop notifications on success/failure
 
-[Action]
-Description = Syncing dotfiles after system upgrade...
-When = PostTransaction
-Exec = /home/YOUR_USERNAME/.local/bin/n0dm sync --yes "Post-pacman upgrade" --no-backup
-```
-
-> 🔁 Replace `YOUR_USERNAME` with your actual username.
-
-**What happens:** After every `pacman -Syu`, n0dm will automatically commit and push any config changes.
-
-### ⏰ Periodic Pull (Systemd Timer)
-
-Keep your dotfiles updated across devices automatically:
-
-1. Create the service: `~/.config/systemd/user/n0dm-sync.service`
-```ini
-[Unit]
-Description=N0DM Smart Sync
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=%h/.local/bin/n0dm sync --yes --no-backup "Auto-sync"
-Environment="PATH=/usr/local/bin:/usr/bin:/bin"
-```
-
-2. Create the timer: `~/.config/systemd/user/n0dm-sync.timer`
-```ini
-[Timer]
-OnBootSec=5min
-OnUnitActiveSec=60min
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-```
-
-3. Enable it:
 ```bash
-systemctl --user daemon-reload
-systemctl --user enable --now n0dm-sync.timer
+# Check timer status
+n0dm schedule status
+
+# Disable auto-sync
+n0dm schedule off
 ```
 
-**Result:** Every hour, n0dm checks GitHub for updates and pulls them to your machine — safely, with smart backup logic.
+### 🪝 Pacman Hook (System Updates)
+
+Automatically sync after system updates:
+
+```bash
+# Install the hook (requires sudo)
+sudo n0dm hook install
+
+# Check hook status
+n0dm hook status
+
+# Remove the hook
+sudo n0dm hook uninstall
+```
+
+**What happens:**
+- After every `pacman -Syu`, `paru -Syu`, or `yay -Syu`
+- n0dm automatically updates itself first
+- Then syncs your dotfiles to GitHub
+- Works with pacman and all AUR helpers (paru, yay, etc.)
+
+> 🔁 **Note:** Requires root privileges to install the hook.
+
+### 🔐 Safe Mode for Automation
+
+For fully automated runs with error handling:
+
+```bash
+n0dm sync --safe --yes
+```
+
+**Safe mode includes:**
+- ✅ Aborts immediately on conflicts (no broken merge state)
+- ✅ Sends desktop notifications for any issues
+- ✅ Auto-updates n0dm before syncing
+- ✅ Creates backups when needed
+
+**Notification examples:**
+- ✅ "n0dm Sync Complete" - Success
+- ⚠️ "n0dm Conflict Detected" - Needs your attention
+- ⚠️ "n0dm Sync Failed" - Check manually
+
+---
+
+## 🏥 Health Check
+
+Run a comprehensive diagnostic:
+
+```bash
+n0dm health
+# or
+n0dm doctor
+```
+
+**Checks:**
+- ✅ Yadm repository initialized
+- ✅ Remote configured and reachable
+- ✅ No unresolved merge conflicts
+- ✅ Backup status and count
+- ✅ Local/remote sync status
+- ✅ Auto-sync timer status
+
+**Example output:**
+```
+=== n0dm Health Check ===
+
+➜ Checking yadm repository...
+✓ Yadm repository initialized
+➜ Checking remote configuration...
+✓ Remote configured: https://github.com/user/dotfiles.git
+➜ Checking remote connectivity...
+✓ Remote is reachable
+➜ Checking for unresolved conflicts...
+✓ No merge conflicts
+➜ Checking backup status...
+  Backups stored: 3 / 10
+  Retention: 30 days
+✓ Backups available
+➜ Checking sync status...
+✓ Local and remote are in sync
+
+✓ Health check passed - no issues found
+```
 
 ---
 
@@ -496,8 +556,10 @@ $ n0dm sync
 | **Clear prompts** | "Proceed with restore? [y/N]" — you're always in control |
 | **Dry-run mode** | `n0dm sync --dry-run` shows what *would* happen, no changes made |
 | **Non-interactive flag** | `--yes` for automation, but interactive by default for safety |
+| **Safe mode** | `--safe` aborts on errors, sends desktop notifications |
 | **Rollback on error** | If sync fails halfway, n0dm can restore from the pre-sync backup |
 | **Lock file** | Prevents two n0dm processes from running at once (no race conditions) |
+| **Desktop notifications** | Get alerted on sync success/failure (requires `--yes` or `--safe`) |
 
 ---
 
