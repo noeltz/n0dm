@@ -33,7 +33,9 @@ ensure_dirs() {
 }
 
 load_config() {
-    [[ -f "$N0DM_CONFIG" ]] && source "$N0DM_CONFIG"
+    if [[ -f "$N0DM_CONFIG" ]]; then
+        source "$N0DM_CONFIG"
+    fi
 }
 
 save_config() {
@@ -409,7 +411,8 @@ n0dm_list() {
 
 #--- Help ----------------------------------------------------------------------
 show_help() {
-    cat <<EOF
+    local help_text
+    help_text=$(cat <<EOF
 ${BOLD}N0DM v${N0DM_VERSION}${RESET} - Enhanced Yadm Wrapper for Arch Linux
 
 ${BOLD}Usage:${RESET} n0dm <command> [options]
@@ -475,6 +478,8 @@ ${BOLD}Automation:${RESET}
   # Pacman hook: n0dm sync --yes --no-backup "Post-upgrade"
   # Cron: 0 * * * * /home/user/.local/bin/n0dm sync --yes --no-backup
 EOF
+)
+    echo -e "$help_text"
 }
 
 #--- Main CLI ------------------------------------------------------------------
@@ -545,12 +550,19 @@ main() {
             check_yadm
             yadm reset "$@"
             ;;
+        #--- N0DM-specific commands ---
+        help)
+            show_help
+            ;;
+        version)
+            echo "n0dm version ${N0DM_VERSION}"
+            ;;
         #--- All other commands: Full passthrough to Yadm ---
         *)
             # This catches ALL native yadm commands:
             # init, clone, add, commit, push, pull, merge, branch, remote,
             # checkout, reset, restore, clean, config, log, diff, enter,
-            # alt, encrypt, decrypt, bootstrap, help, version, etc.
+            # alt, encrypt, decrypt, bootstrap, etc.
             yadm_passthrough "$cmd" "$@"
             ;;
     esac
