@@ -148,8 +148,8 @@ n0dm creates a `~/.gitignore` file during `init` with this pattern:
 
 | Do ✅ | Don't ❌ |
 |-------|---------|
-| `n0dm add ~/.bashrc` — explicit files | `n0dm add -A` — adds EVERYTHING |
-| `n0dm add ~/.config/nvim/` — specific dirs | `n0dm add .` — adds from root |
+| `n0dm track ~/.bashrc` — explicit files | `n0dm track -A` — adds EVERYTHING |
+| `n0dm track ~/.config/nvim/` — specific dirs | `n0dm track .` — adds from root |
 | Create `~/.gitignore` first | Skip the ignore file |
 | Commit `.gitignore` first | Add files before `.gitignore` |
 
@@ -160,12 +160,12 @@ n0dm creates a `~/.gitignore` file during `init` with this pattern:
 n0dm init
 
 # 2. Add .gitignore FIRST and commit it
-n0dm add ~/.gitignore
+n0dm track ~/.gitignore
 n0dm commit -m "Add .gitignore"
 
 # 3. Now add your dotfiles explicitly
-n0dm add ~/.bashrc ~/.zshrc ~/.gitconfig
-n0dm add ~/.config/kitty/ ~/.config/nvim/
+n0dm track ~/.bashrc ~/.zshrc ~/.gitconfig
+n0dm track ~/.config/kitty/ ~/.config/nvim/
 
 # 4. Sync to GitHub
 n0dm sync "Initial dotfiles"
@@ -276,6 +276,7 @@ graph LR
 | `n0dm init` | Create a new dotfiles repository | `n0dm init` |
 | `n0dm clone <repo>` | Restore dotfiles from GitHub | `n0dm clone alice/dotfiles` |
 | `n0dm track <file>` | Add a file to version control | `n0dm track ~/.vimrc` |
+| `n0dm untrack <file>` | Remove from tracking (keeps file) | `n0dm untrack ~/.cache/file` |
 | `n0dm sync [message]` | **Smart sync**: backup → pull → commit → push | `n0dm sync "Updated aliases"` |
 | `n0dm status` | See what's tracked and if files are in sync | `n0dm status` |
 
@@ -303,7 +304,7 @@ graph LR
 
 ```bash
 # Git-style commands
-n0dm add ~/.bashrc          # Stage a file
+n0dm track ~/.bashrc          # Stage a file
 n0dm commit -m "msg"        # Commit changes
 n0dm push                   # Push to GitHub
 n0dm pull                   # Pull from GitHub
