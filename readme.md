@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="#-quick-start">⚡ Quick Start</a> •
-  <a href="#-what-is-n0dm">🤔 What is n0dm?</a> •
+  <a href="#-quick-reference">📖 Quick Reference</a> •
   <a href="#-commands">📋 Commands</a> •
   <a href="#-automation">🤖 Automation</a> •
   <a href="#-faq">❓ FAQ</a>
@@ -106,6 +106,36 @@ n0dm sync "Added my bashrc"
 ```
 
 🎉 **You're done!** Your dotfiles are now safely backed up and ready to sync across devices.
+
+---
+
+## 📖 Quick Reference
+
+### Most Used Commands
+
+```bash
+n0dm track ~/.bashrc              # Add file to tracking
+n0dm untrack ~/.cache/file        # Remove from tracking (keep file)
+n0dm sync "Updated config"        # Backup + commit + push
+n0dm status                       # Check what's tracked
+n0dm list                         # List all tracked files
+```
+
+### Common Workflows
+
+| Task | Command |
+|------|---------|
+| **First time setup** | `n0dm init` → `n0dm track ~/.bashrc` → `n0dm sync "Initial"` |
+| **After editing config** | `n0dm sync "Updated kitty"` |
+| **Stop tracking a file** | `n0dm untrack ~/.oldconfig` → `n0dm sync "Remove old"` |
+| **See what changed** | `n0dm status` |
+| **View commit history** | `n0dm log --oneline` |
+
+### ⚡ One-Liner for New Users
+
+```bash
+n0dm init && n0dm track ~/.bashrc ~/.zshrc && n0dm sync "Initial dotfiles"
+```
 
 ---
 
@@ -218,6 +248,52 @@ Public/
 
 ---
 
+## 📋 Command Reference
+
+### 🔧 Core Commands
+
+| Command | What It Does | Example |
+|---------|-------------|---------|
+| `n0dm init` | Create a new dotfiles repository | `n0dm init` |
+| `n0dm clone <repo>` | Restore dotfiles from GitHub | `n0dm clone alice/dotfiles` |
+| `n0dm track <file>` | Add a file to version control | `n0dm track ~/.vimrc` |
+| `n0dm untrack <file>` | Remove from tracking (keeps file) | `n0dm untrack ~/.cache/file` |
+| `n0dm sync [message]` | **Smart sync**: backup → pull → commit → push | `n0dm sync "Updated aliases"` |
+| `n0dm status` | See what's tracked and if files are in sync | `n0dm status` |
+
+### 💾 Backup & Restore
+
+| Command | What It Does | Example |
+|---------|-------------|---------|
+| `n0dm backup [label]` | Create a manual backup snapshot | `n0dm backup "before-nvim-upgrade"` |
+| `n0dm backups` | List all available backups | `n0dm backups` |
+| `n0dm restore <id>` | Restore your dotfiles from a backup | `n0dm restore 20260223_143022_pre-sync` |
+| `n0dm cleanup` | Remove old backups (auto-runs after sync) | `n0dm cleanup` |
+
+### 🔍 Inspection & Debugging
+
+| Command | What It Does | Example |
+|---------|-------------|---------|
+| `n0dm diff [file]` | See differences between repo and home | `n0dm diff ~/.bashrc` |
+| `n0dm list` | List all tracked files *(passes through to yadm)* | `n0dm list` |
+| `n0dm conflicts` | Check for unresolved merge conflicts | `n0dm conflicts` |
+| `n0dm doctor` | Run diagnostics and fix common issues | `n0dm doctor` |
+
+### 🔄 All Git Commands Work Too!
+
+> 💡 **Any Git/Yadm command works with `n0dm` prefix:**
+
+```bash
+n0dm commit -m "msg"      # Commit changes
+n0dm push                 # Push to GitHub
+n0dm pull                 # Pull from GitHub
+n0dm log --oneline        # View commit history
+n0dm branch               # Manage branches
+n0dm encrypt file.gpg     # Encrypt sensitive files
+```
+
+---
+
 ## 🤔 What Is n0dm? (In Plain English)
 
 ### 📁 Your Dotfiles, Explained
@@ -265,65 +341,13 @@ graph LR
 - ♻️ **Auto-cleanup**: Old backups removed based on your settings
 - 🛡️ **Safety net**: Always backup before risky operations like `restore`
 
----
-
-## 📋 Command Reference
-
-### 🔧 Core Commands
-
-| Command | What It Does | Example |
-|---------|-------------|---------|
-| `n0dm init` | Create a new dotfiles repository | `n0dm init` |
-| `n0dm clone <repo>` | Restore dotfiles from GitHub | `n0dm clone alice/dotfiles` |
-| `n0dm track <file>` | Add a file to version control | `n0dm track ~/.vimrc` |
-| `n0dm untrack <file>` | Remove from tracking (keeps file) | `n0dm untrack ~/.cache/file` |
-| `n0dm sync [message]` | **Smart sync**: backup → pull → commit → push | `n0dm sync "Updated aliases"` |
-| `n0dm status` | See what's tracked and if files are in sync | `n0dm status` |
-
-### 💾 Backup & Restore
-
-| Command | What It Does | Example |
-|---------|-------------|---------|
-| `n0dm backup [label]` | Create a manual backup snapshot | `n0dm backup "before-nvim-upgrade"` |
-| `n0dm backups` | List all available backups | `n0dm backups` |
-| `n0dm restore <id>` | Restore your dotfiles from a backup | `n0dm restore 20260223_143022_pre-sync` |
-| `n0dm cleanup` | Remove old backups (auto-runs after sync) | `n0dm cleanup` |
-
-### 🔍 Inspection & Debugging
-
-| Command | What It Does | Example |
-|---------|-------------|---------|
-| `n0dm diff [file]` | See differences between repo and home | `n0dm diff ~/.bashrc` |
-| `n0dm list` | List all tracked files *(passes through to yadm)* | `n0dm list` |
-| `n0dm conflicts` | Check for unresolved merge conflicts | `n0dm conflicts` |
-| `n0dm doctor` | Run diagnostics and fix common issues | `n0dm doctor` |
-
-### 🔄 Yadm Passthrough (All Native Commands Work!)
-
-> 💡 **Any command not listed above is passed directly to Yadm.** This means **every Yadm command** from the [official docs](https://yadm.io/docs/common_commands) works with `n0dm`:
-
-```bash
-# Git-style commands
-n0dm track ~/.bashrc          # Stage a file
-n0dm commit -m "msg"        # Commit changes
-n0dm push                   # Push to GitHub
-n0dm pull                   # Pull from GitHub
-n0dm log                    # View commit history
-n0dm branch                 # Manage branches
-
-# Advanced Yadm features
-n0dm encrypt file.gpg       # Encrypt sensitive files
-n0dm alt <alt>              # Switch between config variants
-n0dm enter                  # Open a shell with yadm environment
-```
-
 ### ⚙️ Maintenance
 
 | Command | What It Does | Example |
 |---------|-------------|---------|
 | `n0dm update` | Check for and install n0dm updates | `n0dm update` |
 | `n0dm mergetool` | Open visual tool to resolve conflicts | `n0dm mergetool` |
-| `n0dm help` | Show this help guide | `n0dm help` |
+| `n0dm help` | Show help guide | `n0dm help` |
 
 ---
 
@@ -459,6 +483,35 @@ $ n0dm sync
 | **Non-interactive flag** | `--yes` for automation, but interactive by default for safety |
 | **Rollback on error** | If sync fails halfway, n0dm can restore from the pre-sync backup |
 | **Lock file** | Prevents two n0dm processes from running at once (no race conditions) |
+
+---
+
+## 🔧 Troubleshooting
+
+### Common Issues
+
+| Problem | Solution |
+|---------|----------|
+| **"No commits yet"** | Run `n0dm sync "Initial"` after tracking files |
+| **"Remote has different history"** | Use `n0dm sync --force` for first push |
+| **"File not tracked"** | Run `n0dm track ~/.file` first |
+| **"Merge conflicts"** | Run `n0dm mergetool` to resolve visually |
+| **"Nothing to commit"** | Check `n0dm status` for staged changes |
+
+### Quick Diagnostics
+
+```bash
+n0dm status           # Check repo state
+n0dm list             # See tracked files
+n0dm doctor           # Run diagnostics
+```
+
+### Get Help
+
+```bash
+n0dm help             # Show all commands
+n0dm --help           # Command-specific help
+```
 
 ---
 
