@@ -88,7 +88,7 @@ bash -n n0dm                          # Syntax check
 #    Line 10: readonly N0DM_VERSION="1.4.2"
 
 # 6. Commit with descriptive message
-git add n0dm
+git add n0dm readme.md
 git commit -m "fix: add proper clone handler with force flag support
 
 - Add n0dm_clone function to handle clone as enhanced command
@@ -96,6 +96,7 @@ git commit -m "fix: add proper clone handler with force flag support
 - Auto-convert short format (user/repo) to full GitHub URL
 - Better error messages for auth and repo issues
 - Update help documentation
+- Update readme.md with new commands
 
 Bump version to 1.4.2"
 
@@ -109,9 +110,34 @@ git push
 - [ ] Run `./n0dm version` - shows correct version
 - [ ] Run `./n0dm help` - displays properly
 - [ ] Update `N0DM_VERSION` in `n0dm` script (2 places: header comment + readonly)
+- [ ] **Update `readme.md` with all new features/commands** (REQUIRED for every change)
 - [ ] Update version badge in `readme.md` (only for major/minor releases)
 - [ ] Push to remote with `git push`
 - [ ] Verify self-update works: `n0dm update` on another machine
+
+### Documentation Requirements
+
+**Every code change MUST be documented in readme.md:**
+
+- New commands → Add to Command Reference table
+- New features → Add to relevant section with examples
+- New flags/options → Document in Options section
+- Bug fixes → Update Troubleshooting if relevant
+- Visual improvements → Maintain emoji-first, table-driven style
+
+**Before committing:**
+```bash
+# Verify all new features are documented
+grep -E "n0dm (schedule|hook|health|safe)" readme.md
+```
+
+**Style guidelines for README:**
+- ✅ Emoji-first navigation (`## 🎯`, `## ✨`, etc.)
+- ✅ Table-driven comparisons
+- ✅ ASCII diagrams for workflows
+- ✅ Callout boxes with emojis (`> 💡 **Tip:**`)
+- ✅ Badge stack for technologies
+- ✅ Feature checklists with ✅
 
 ### Why Push is Required
 
