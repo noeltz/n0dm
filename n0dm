@@ -276,14 +276,21 @@ n0dm_safe_sync() {
     fi
 
     # Commit local changes first (if any)
-    # Check for both staged and unstaged changes
-    local has_changes
-    has_changes=$(yadm status --porcelain 2>/dev/null)
-    if [[ -n "$has_changes" ]]; then
-        print_info "Committing local changes..."
-        # Only add unstaged changes, preserve staged changes (like removals)
-        yadm add -u
+    # Check for staged changes (like removals from untrack)
+    local staged_changes
+    staged_changes=$(yadm diff --cached --name-only 2>/dev/null)
+    if [[ -n "$staged_changes" ]]; then
+        print_info "Committing staged changes..."
         yadm commit -m "$message" || print_warn "Nothing to commit"
+    else
+        # Check for unstaged changes
+        local unstaged_changes
+        unstaged_changes=$(yadm status --porcelain 2>/dev/null | grep -v "^D " || true)
+        if [[ -n "$unstaged_changes" ]]; then
+            print_info "Committing local changes..."
+            yadm add -u
+            yadm commit -m "$message" || print_warn "Nothing to commit"
+        fi
     fi
 
     # Check if we have any commits
@@ -637,16 +644,46 @@ n0dm_untrack() {
         files+=("$rel_path")
     done
 
-    print_info "Removing from tracking (keeping files in place)..."
-    # Run yadm rm from HOME directory so relative paths work
-    (cd "$HOME" && yadm rm --cached "${files[@]}")
-    print_ok "Untracked: ${files[*]}"
-    print_info "Files remain in your home directory but will be removed from remote on next sync."
+    # Check if files are actually tracked (in HEAD)
+    local yadm_git_dir; yadm_git_dir=$(get_yadm_git_dir)
+    local tracked_files=()
+    local unstaged_files=()
     
-    # Auto-commit the removal
-    print_info "Committing removal..."
-    (cd "$HOME" && yadm commit -m "n0dm untrack: ${files[*]}") || print_warn "Nothing to commit (file was not previously committed)"
-    print_info "Run 'n0dm sync' to push this change to remote"
+    for file in "${files[@]}"; do
+        if git --git-dir="$yadm_git_dir" rev-parse HEAD:"$file" &>/dev/null; then
+            tracked_files+=("$file")
+        else
+            unstaged_files+=("$file")
+        fi
+    done
+
+    if [[ ${#tracked_files[@]} -gt 0 ]]; then
+        print_info "Removing from tracking (keeping files in place)..."
+        (cd "$HOME" && yadm rm --cached "${tracked_files[@]}")
+        print_ok "Untracked: ${tracked_files[*]}"
+        print_info "Files remain in your home directory."
+        
+        # Commit the removal immediately
+        print_info "Committing removal..."
+        if (cd "$HOME" && yadm commit -m "n0dm untrack: ${tracked_files[*]}"); then
+            print_ok "Removal committed!"
+            print_info "Run 'n0dm sync' to push this change to remote."
+        else
+            print_warn "Nothing to commit (check if files were actually tracked)"
+        fi
+    fi
+    
+    # Handle files that were staged but not yet committed
+    if [[ ${#unstaged_files[@]} -gt 0 ]]; then
+        print_info "Removing unstaged files from index..."
+        (cd "$HOME" && yadm rm --cached "${unstaged_files[@]}")
+        print_ok "Removed from staging (never committed): ${unstaged_files[*]}"
+        print_info "Files remain in your home directory."
+    fi
+    
+    if [[ ${#tracked_files[@]} -eq 0 && ${#unstaged_files[@]} -eq 0 ]]; then
+        print_warn "None of the specified files are tracked."
+    fi
 }
 
 #--- Yadm Passthrough (ALL native commands) ------------------------------------
