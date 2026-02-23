@@ -659,7 +659,27 @@ n0dm_untrack() {
 
     if [[ ${#tracked_files[@]} -gt 0 ]]; then
         print_info "Removing from tracking (keeping files in place)..."
-        (cd "$HOME" && yadm rm --cached "${tracked_files[@]}")
+        
+        # Check if any files are directories (need -r flag)
+        local dirs=() files=()
+        for f in "${tracked_files[@]}"; do
+            if [[ -d "$HOME/$f" ]]; then
+                dirs+=("$f")
+            else
+                files+=("$f")
+            fi
+        done
+        
+        # Remove files first
+        if [[ ${#files[@]} -gt 0 ]]; then
+            (cd "$HOME" && yadm rm --cached "${files[@]}")
+        fi
+        
+        # Remove directories with -r flag
+        if [[ ${#dirs[@]} -gt 0 ]]; then
+            (cd "$HOME" && yadm rm -r --cached "${dirs[@]}")
+        fi
+        
         print_ok "Untracked: ${tracked_files[*]}"
         print_info "Files remain in your home directory."
         
