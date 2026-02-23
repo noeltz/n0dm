@@ -1,0 +1,20 @@
+# n0dm runtime files
+*.lock
+*.tmp
+*.log
+.n0dom-state
+
+# IDE/Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Backups
+*.bak
+*.backup

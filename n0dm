@@ -1,0 +1,559 @@
+#!/usr/bin/env bash
+#===============================================================================
+# N0DM - Enhanced Yadm Wrapper for Arch Linux
+# Version: 1.1.0
+# Combines Yadm's reliability with smart backups and safety features
+#===============================================================================
+set -euo pipefail
+
+#--- Configuration -------------------------------------------------------------
+readonly N0DM_VERSION="1.1.0"
+readonly N0DM_UPDATE_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm"
+readonly N0DM_DATA_DIR="${HOME}/.local/share/n0dm"
+readonly N0DM_BACKUP_DIR="${N0DM_DATA_DIR}/backups"
+readonly N0DM_CONFIG="${N0DM_DATA_DIR}/config"
+readonly N0DM_STATE_FILE="${N0DM_DATA_DIR}/state"
+readonly MAX_BACKUPS="${N0DM_MAX_BACKUPS:-10}"
+readonly BACKUP_RETENTION_DAYS="${N0DM_BACKUP_RETENTION:-30}"
+
+#--- Colors & Output -----------------------------------------------------------
+readonly RESET='\033[0m' BOLD='\033[1m' RED='\033[31m' GREEN='\033[32m'
+readonly YELLOW='\033[33m' BLUE='\033[34m' MAGENTA='\033[35m' CYAN='\033[36m'
+readonly CHECK='✓' CROSS='✗' ARROW='➜' WARN='⚠' INFO='ℹ'
+
+print_ok()    { echo -e "${GREEN}${CHECK}${RESET} $*"; }
+print_err()   { echo -e "${RED}${CROSS}${RESET} $*" >&2; }
+print_info()  { echo -e "${BLUE}${ARROW}${RESET} $*"; }
+print_warn()  { echo -e "${YELLOW}${WARN}${RESET} $*"; }
+print_notice(){ echo -e "${MAGENTA}${INFO}${RESET} $*"; }
+
+#--- Helpers -------------------------------------------------------------------
+ensure_dirs() {
+    mkdir -p "$N0DM_BACKUP_DIR" "$(dirname "$N0DM_CONFIG")" "$(dirname "$N0DM_STATE_FILE")"
+}
+
+load_config() {
+    [[ -f "$N0DM_CONFIG" ]] && source "$N0DM_CONFIG"
+}
+
+save_config() {
+    cat > "$N0DM_CONFIG" <<EOF
+# N0DM config (auto-generated)
+MAX_BACKUPS=${MAX_BACKUPS}
+BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS}
+EOF
+}
+
+timestamp() { date +"%Y%m%d_%H%M%S"; }
+epoch_time() { date +%s; }
+
+check_yadm() {
+    if ! command -v yadm &> /dev/null; then
+        print_err "Yadm not found. Install with: sudo pacman -S yadm"
+        exit 1
+    fi
+}
+
+get_yadm_git_dir() {
+    echo "${HOME}/.local/share/yadm/repo.git"
+}
+
+#--- State Management for Smart Backups ----------------------------------------
+get_last_backup_epoch() {
+    if [[ -f "$N0DM_STATE_FILE" ]]; then
+        grep "^last_backup_epoch=" "$N0DM_STATE_FILE" 2>/dev/null | cut -d= -f2 || echo "0"
+    else
+        echo "0"
+    fi
+}
+
+set_last_backup_epoch() {
+    local epoch="$1"
+    mkdir -p "$(dirname "$N0DM_STATE_FILE")"
+    # Update or add the value
+    if grep -q "^last_backup_epoch=" "$N0DM_STATE_FILE" 2>/dev/null; then
+        sed -i "s/^last_backup_epoch=.*/last_backup_epoch=${epoch}/" "$N0DM_STATE_FILE"
+    else
+        echo "last_backup_epoch=${epoch}" >> "$N0DM_STATE_FILE"
+    fi
+}
+
+#--- Smart Backup Detection ----------------------------------------------------
+# Returns 0 (true) if tracked files have changed since last backup
+needs_smart_backup() {
+    local yadm_git_dir; yadm_git_dir=$(get_yadm_git_dir)
+    local last_backup_epoch; last_backup_epoch=$(get_last_backup_epoch)
+    
+    # If no previous backup, always backup on first sync
+    if [[ "$last_backup_epoch" -eq 0 ]]; then
+        return 0
+    fi
+    
+    # Check if any tracked file was modified after last backup
+    cd "$HOME" || return 1
+    while IFS= read -r -d '' file; do
+        [[ -z "$file" ]] && continue
+        local full_path="${HOME}/${file}"
+        # Skip if file doesn't exist in home (might be repo-only)
+        [[ ! -e "$full_path" ]] && continue
+        # Get file modification time
+        local file_mtime; file_mtime=$(stat -c %Y "$full_path" 2>/dev/null || echo "0")
+        if [[ "$file_mtime" -gt "$last_backup_epoch" ]]; then
+            return 0  # Change detected
+        fi
+    done < <(git --git-dir="$yadm_git_dir" --work-tree="$HOME" ls-files -z 2>/dev/null)
+    
+    return 1  # No changes detected
+}
+
+#--- Backup System -------------------------------------------------------------
+create_backup() {
+    local label="${1:-manual}"
+    local ts; ts=$(timestamp)
+    local epoch; epoch=$(epoch_time)
+    local backup_dir="${N0DM_BACKUP_DIR}/${ts}_${label}"
+    
+    print_info "Creating backup: ${backup_dir#$HOME/}"
+    mkdir -p "$backup_dir"
+    
+    local yadm_git_dir; yadm_git_dir=$(get_yadm_git_dir)
+    
+    if [[ ! -d "$yadm_git_dir" ]]; then
+        print_err "Yadm repository not found. Run 'n0dm init' first."
+        return 1
+    fi
+    
+    # Use git archive to export tracked files cleanly
+    cd "$HOME"
+    git --git-dir="$yadm_git_dir" --work-tree="$HOME" ls-files -z | \
+        xargs -0 -I{} sh -c 'mkdir -p "$(dirname "$backup_dir/{}")" && cp -a "{}" "$backup_dir/{}"'
+    
+    # Store metadata
+    cat > "${backup_dir}/.n0dm-meta" <<EOF
+timestamp=$ts
+epoch=$epoch
+label=$label
+yadm_branch=$(git --git-dir="$yadm_git_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+n0dm_version=${N0DM_VERSION}
+EOF
+    
+    # Update state file with backup epoch
+    set_last_backup_epoch "$epoch"
+    
+    # Cleanup old backups (smart retention)
+    cleanup_backups
+    
+    print_ok "Backup created: $(basename "$backup_dir")"
+    echo "$backup_dir"
+}
+
+list_backups() {
+    if [[ ! -d "$N0DM_BACKUP_DIR" ]] || [[ -z "$(ls -A "$N0DM_BACKUP_DIR" 2>/dev/null)" ]]; then
+        print_warn "No backups found"
+        return 1
+    fi
+    
+    echo -e "\n${BOLD}Available Backups:${RESET}"
+    printf "%-30s %-15s %-10s %s\n" "BACKUP ID" "DATE" "EPOCH" "LABEL"
+    printf "%-30s %-15s %-10s %s\n" "$(printf '%.0s-' {1..30})" "$(printf '%.0s-' {1..15})" "$(printf '%.0s-' {1..10})" "$(printf '%.0s-' {1..10})"
+    
+    find "$N0DM_BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -r | while read -r backup; do
+        local ts="${backup:0:15}"
+        local label="${backup:16}"
+        local date_fmt="${ts:0:4}-${ts:4:2}-${ts:6:2} ${ts:9:2}:${ts:11:2}"
+        # Extract epoch from metadata if available
+        local epoch="N/A"
+        if [[ -f "${N0DM_BACKUP_DIR}/${backup}/.n0dm-meta" ]]; then
+            epoch=$(grep "^epoch=" "${N0DM_BACKUP_DIR}/${backup}/.n0dm-meta" 2>/dev/null | cut -d= -f2 || echo "N/A")
+        fi
+        printf "%-30s %-15s %-10s %s\n" "$backup" "$date_fmt" "$epoch" "$label"
+    done
+    echo
+}
+
+restore_backup() {
+    local backup_id="$1"
+    local backup_dir="${N0DM_BACKUP_DIR}/${backup_id}"
+    
+    if [[ ! -d "$backup_dir" ]]; then
+        print_err "Backup not found: $backup_id"
+        list_backups
+        return 1
+    fi
+    
+    print_warn "This will overwrite tracked files in your home directory"
+    if [[ "${N0DM_YES:-false}" != "true" ]]; then
+        read -p "Proceed with restore? [y/N] " -n 1 -r
+        echo
+        [[ $REPLY =~ ^[Yy]$ ]] || { print_info "Restore cancelled"; return 0; }
+    fi
+    
+    # Create safety backup first (always, regardless of smart logic)
+    print_info "Creating safety backup before restore..."
+    create_backup "pre-restore" >/dev/null
+    
+    # Restore files
+    print_info "Restoring from: $backup_id"
+    cd "$backup_dir"
+    find . -type f ! -name '.n0dm-meta' -exec sh -c '
+        rel="${1#./}"
+        [[ -n "$rel" ]] && { mkdir -p "$HOME/$(dirname "$rel")" && cp -a "$1" "$HOME/$rel"; }
+    ' _ {} \;
+    
+    print_ok "Restore completed!"
+    print_info "Run 'n0dm status' or 'yadm status' to verify"
+}
+
+cleanup_backups() {
+    [[ ! -d "$N0DM_BACKUP_DIR" ]] && return 0
+    
+    local now; now=$(epoch_time)
+    local retention_secs=$((BACKUP_RETENTION_DAYS * 86400))
+    local count=0 removed=0
+    
+    # Sort by name (timestamp) descending, keep newest MAX_BACKUPS
+    find "$N0DM_BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -r | while read -r backup; do
+        ((count++))
+        local backup_path="${N0DM_BACKUP_DIR}/${backup}"
+        local backup_time; backup_time=$(stat -c %Y "$backup_path" 2>/dev/null || echo 0)
+        local age=$((now - backup_time))
+        
+        # Remove if too old OR beyond max count
+        if ((age > retention_secs)) || ((count > MAX_BACKUPS)); then
+            rm -rf "$backup_path"
+            print_info "Removed old backup: $backup"
+            ((removed++))
+        fi
+    done
+    
+    [[ $removed -gt 0 ]] && print_ok "Cleanup: removed $removed backup(s)"
+}
+
+#--- Safe Sync Wrapper with Smart Backup ---------------------------------------
+n0dm_safe_sync() {
+    local message="${1:-Auto-sync}"
+    local no_backup="${2:-false}"
+    local dry_run="${3:-false}"
+    
+    # Check yadm is initialized
+    if ! yadm status &>/dev/null; then
+        print_err "Yadm not initialized. Run 'n0dm init' first."
+        return 1
+    fi
+    
+    # Smart backup: only create if tracked files changed AND backup not disabled
+    if [[ "$no_backup" != "true" && "$dry_run" != "true" ]]; then
+        if needs_smart_backup; then
+            print_info "Changes detected in tracked files, creating pre-sync backup..."
+            create_backup "pre-sync" >/dev/null
+        else
+            print_info "No changes in tracked files, skipping backup"
+        fi
+    fi
+    
+    # Dry run mode
+    if [[ "$dry_run" == "true" ]]; then
+        print_info "=== DRY RUN ==="
+        yadm status --short
+        print_info "=== END DRY RUN ==="
+        return 0
+    fi
+    
+    # Pull with conflict detection
+    print_info "Pulling remote changes..."
+    if ! yadm pull --ff-only 2>/dev/null; then
+        print_warn "Fast-forward pull failed. Checking for conflicts..."
+        if yadm merge --no-commit --no-ff origin/$(yadm branch --show-current) 2>&1 | grep -q "CONFLICT"; then
+            print_err "Merge conflicts detected!"
+            print_info "Resolve with: n0dm mergetool"
+            print_info "Then run: n0dm sync to complete"
+            return 1
+        fi
+    fi
+    
+    # Commit local changes if any
+    if [[ -n "$(yadm status --porcelain)" ]]; then
+        print_info "Committing local changes..."
+        yadm add -A
+        yadm commit -m "$message" || print_warn "Nothing to commit"
+    fi
+    
+    # Push
+    if yadm remote get-url origin &>/dev/null; then
+        print_info "Pushing to remote..."
+        yadm push || {
+            print_err "Push failed. Your changes are committed locally."
+            return 1
+        }
+        print_ok "Sync complete!"
+    fi
+    
+    # Post-sync cleanup (always run to maintain retention)
+    cleanup_backups
+    return 0
+}
+
+#--- Conflict Helper -----------------------------------------------------------
+n0dm_check_conflicts() {
+    local yadm_git_dir; yadm_git_dir=$(get_yadm_git_dir)
+    
+    if [[ -n "$(git --git-dir="$yadm_git_dir" diff --name-only --diff-filter=U 2>/dev/null)" ]]; then
+        print_err "Unresolved merge conflicts:"
+        git --git-dir="$yadm_git_dir" diff --name-only --diff-filter=U
+        echo
+        print_info "Resolve with: n0dm mergetool"
+        return 1
+    fi
+    return 0
+}
+
+#--- Atomic Self-Update --------------------------------------------------------
+self_update() {
+    print_info "Checking for updates..."
+    
+    local script_path; script_path=$(realpath "$0")
+    local script_dir; script_dir=$(dirname "$script_path")
+    local temp_file; temp_file=$(mktemp -p "$script_dir" .n0dm-update.XXXXXX)
+    
+    if curl -fsSL "$N0DM_UPDATE_URL" -o "$temp_file" 2>/dev/null; then
+        local current_version; current_version=$(grep "^readonly N0DM_VERSION=" "$script_path" | head -1 | cut -d'"' -f2)
+        local new_version; new_version=$(grep "^readonly N0DM_VERSION=" "$temp_file" | head -1 | cut -d'"' -f2)
+        
+        [[ -z "$current_version" ]] && current_version="unknown"
+        [[ -z "$new_version" ]] && { print_err "Failed to determine remote version"; rm -f "$temp_file"; return 1; }
+        
+        if [[ "$new_version" != "$current_version" ]]; then
+            print_info "New version available: $new_version (current: $current_version)"
+            if [[ "${N0DM_YES:-false}" == "true" ]]; then
+                auto_confirm="y"
+            else
+                read -p "Install update? [y/N] " -n 1 -r auto_confirm
+                echo
+            fi
+            
+            if [[ $auto_confirm =~ ^[Yy]$ ]]; then
+                chmod +x "$temp_file"
+                if mv "$temp_file" "$script_path"; then
+                    print_ok "Updated to version $new_version"
+                    print_info "Restarting n0dm..."
+                    exec "$script_path" version
+                else
+                    print_err "Failed to install update"; rm -f "$temp_file"; return 1
+                fi
+            else
+                rm -f "$temp_file"; print_info "Update cancelled"
+            fi
+        else
+            print_ok "Already running the latest version ($current_version)"
+            rm -f "$temp_file"
+        fi
+    else
+        print_err "Failed to check for updates"
+        print_info "Make sure you have internet connectivity"
+        rm -f "$temp_file"; return 1
+    fi
+}
+
+#--- Yadm Passthrough (ALL native commands) ------------------------------------
+# This function passes ANY command directly to yadm, preserving all native behavior
+yadm_passthrough() {
+    check_yadm
+    yadm "$@"
+}
+
+#--- Enhanced Status (yadm status + n0dm info) ---------------------------------
+n0dm_status() {
+    # First, show native yadm status (passthrough behavior)
+    echo -e "${BOLD}=== Yadm Repository Status ===${RESET}"
+    yadm status "$@" 2>/dev/null || print_warn "Yadm not initialized"
+    echo
+    
+    # Then, append n0dm-specific backup info
+    echo -e "${BOLD}=== N0DM Backup Status ===${RESET}"
+    local count=0
+    if [[ -d "$N0DM_BACKUP_DIR" ]]; then
+        count=$(find "$N0DM_BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+    fi
+    echo "  Backups stored: $count / $MAX_BACKUPS"
+    echo "  Retention: $BACKUP_RETENTION_DAYS days"
+    echo "  Last backup epoch: $(get_last_backup_epoch)"
+    echo "  Backup directory: $N0DM_BACKUP_DIR"
+    echo
+    
+    echo -e "${BOLD}=== N0DM Info ===${RESET}"
+    echo "  Version: $N0DM_VERSION"
+    echo "  Script: $(realpath "$0")"
+    
+    # Smart backup preview
+    if needs_smart_backup 2>/dev/null; then
+        echo -e "  ${YELLOW}⚠ Tracked files have changed since last backup${RESET}"
+    else
+        echo -e "  ${GREEN}✓ Tracked files unchanged (next sync will skip backup)${RESET}"
+    fi
+}
+
+#--- Enhanced List (yadm list + optional backup summary) -----------------------
+n0dm_list() {
+    # Pass through to yadm's native list command
+    yadm list "$@"
+    
+    # Optional: show brief backup summary after list (non-intrusive)
+    if [[ -d "$N0DM_BACKUP_DIR" ]]; then
+        local count; count=$(find "$N0DM_BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+        if [[ "$count" -gt 0 ]]; then
+            echo
+            print_notice "Tip: $count backup(s) available. Use 'n0dm backups' to list or 'n0dm restore <id>' to recover."
+        fi
+    fi
+}
+
+#--- Help ----------------------------------------------------------------------
+show_help() {
+    cat <<EOF
+${BOLD}N0DM v${N0DM_VERSION}${RESET} - Enhanced Yadm Wrapper for Arch Linux
+
+${BOLD}Usage:${RESET} n0dm <command> [options]
+
+${BOLD}Enhanced Commands (N0DM specific):${RESET}
+  sync [message]            Safe sync with SMART backup: pull → commit → push
+  backup [label]            Create manual backup of tracked files
+  restore <id>              Restore from n0dm backup (use 'backups' to see IDs)
+  backups                   List available n0dm backups
+  cleanup                   Remove old backups per retention policy
+  conflicts                 Check for unresolved merge conflicts
+  status                    Show yadm status + n0dm backup info
+  update                    Check for and install n0dm updates
+  mergetool                 Launch configured merge tool for conflicts
+
+${BOLD}Yadm Passthrough Commands (ALL native commands work):${RESET}
+  init, clone, add, commit, push, pull, merge, branch, remote, checkout
+  reset, restore, clean, config, log, diff, enter, alt, encrypt, decrypt
+  bootstrap, help, version, list, status
+  → All other commands pass directly to yadm unchanged
+
+${BOLD}Command Conflict Resolution:${RESET}
+  • 'restore': n0dm restore = backup restore | yadm restore = git restore
+    → Use 'n0dm yadm-restore' to access native yadm restore
+  • 'list': Passes through to yadm list + shows brief backup hint
+  • 'status': Shows yadm status first, then appends n0dm backup info
+
+${BOLD}Options (for sync):${RESET}
+  --no-backup               Skip smart backup check
+  --dry-run                 Show what would be done
+  --yes                     Auto-confirm prompts (for automation)
+  --verbose                 Show detailed sync analysis
+
+${BOLD}Environment Variables:${RESET}
+  N0DM_MAX_BACKUPS          Max backups to keep (default: 10)
+  N0DM_BACKUP_RETENTION     Days to retain backups (default: 30)
+  N0DM_YES                  Set to 'true' for non-interactive mode
+
+${BOLD}Smart Backup Logic:${RESET}
+  • Backup created ONLY if tracked files changed since last backup
+  • First sync always creates backup (no previous state)
+  • Retention policy prevents backup pollution automatically
+  • Safety backup always created before 'restore' regardless of smart logic
+
+${BOLD}Examples:${RESET}
+  n0dm init                              # Initialize yadm repo
+  n0dm clone git@github.com:user/repo    # Clone existing repo
+  n0dm sync "Update config"              # Safe sync with smart backup
+  n0dm sync --dry-run                    # Preview changes
+  n0dm backup "before-vim-upgrade"       # Manual backup
+  n0dm backups                           # List all backups
+  n0dm restore 20260223_143022_pre-sync  # Restore from backup
+  n0dm add .bashrc                       # Yadm passthrough
+  n0dm commit -m "msg"                   # Yadm passthrough
+  n0dm push                              # Yadm passthrough
+  n0dm list                              # Yadm list + backup hint
+  n0dm status                            # Enhanced status
+  n0dm update                            # Self-update n0dm
+  n0dm yadm-restore .bashrc              # Access native yadm restore
+
+${BOLD}Automation:${RESET}
+  # Systemd: n0dm sync --yes --no-backup "Auto"
+  # Pacman hook: n0dm sync --yes --no-backup "Post-upgrade"
+  # Cron: 0 * * * * /home/user/.local/bin/n0dm sync --yes --no-backup
+EOF
+}
+
+#--- Main CLI ------------------------------------------------------------------
+main() {
+    ensure_dirs
+    load_config
+    
+    # Parse global flags first
+    local no_backup=false dry_run=false yes_mode=false verbose=false
+    local args=()
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --no-backup) no_backup=true; shift ;;
+            --dry-run) dry_run=true; shift ;;
+            --yes) yes_mode=true; export N0DM_YES=true; shift ;;
+            --verbose) verbose=true; shift ;;
+            -*) args+=("$1"); shift ;;
+            *) args+=("$1"); shift ;;
+        esac
+    done
+    
+    set -- "${args[@]}"
+    local cmd="${1:-help}"; shift || true
+    
+    case "$cmd" in
+        #--- Enhanced N0DM Commands ---
+        sync)
+            n0dm_safe_sync "${1:-Auto-sync}" "$no_backup" "$dry_run"
+            ;;
+        backup)
+            create_backup "${1:-manual}"
+            ;;
+        restore)
+            [[ -z "${1:-}" ]] && { list_backups; exit 0; }
+            restore_backup "$1"
+            ;;
+        backups)
+            list_backups
+            ;;
+        cleanup)
+            cleanup_backups
+            print_ok "Cleanup complete"
+            ;;
+        conflicts)
+            n0dm_check_conflicts
+            ;;
+        status)
+            n0dm_status "$@"
+            ;;
+        update|upgrade|self-update)
+            self_update
+            ;;
+        mergetool)
+            check_yadm
+            yadm mergetool "$@"
+            ;;
+        list)
+            n0dm_list "$@"
+            ;;
+        #--- Access native yadm commands that conflict ---
+        yadm-restore)
+            # Access native yadm restore when n0dm 'restore' means backup restore
+            check_yadm
+            yadm restore "$@"
+            ;;
+        yadm-reset)
+            check_yadm
+            yadm reset "$@"
+            ;;
+        #--- All other commands: Full passthrough to Yadm ---
+        *)
+            # This catches ALL native yadm commands:
+            # init, clone, add, commit, push, pull, merge, branch, remote,
+            # checkout, reset, restore, clean, config, log, diff, enter,
+            # alt, encrypt, decrypt, bootstrap, help, version, etc.
+            yadm_passthrough "$cmd" "$@"
+            ;;
+    esac
+}
+
+main "$@"
