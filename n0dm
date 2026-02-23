@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #===============================================================================
 # N0DM - Enhanced Yadm Wrapper for Arch Linux
-# Version: 1.5.0
+# Version: 1.5.1
 # Combines Yadm's reliability with smart backups and safety features
 #===============================================================================
 set -euo pipefail
 
 #--- Configuration -------------------------------------------------------------
-readonly N0DM_VERSION="1.5.0"
+readonly N0DM_VERSION="1.5.1"
 readonly N0DM_UPDATE_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm"
 readonly N0DM_DATA_DIR="${HOME}/.local/share/n0dm"
 readonly N0DM_BACKUP_DIR="${N0DM_DATA_DIR}/backups"
@@ -775,7 +775,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=${HOME}/.local/bin/n0dm sync --yes --no-backup
+ExecStart=${HOME}/.local/bin/n0dm sync --yes
 Environment="PATH=/usr/local/bin:/usr/bin:/bin"
 EOF
     
@@ -806,6 +806,101 @@ EOF
         print_err "Failed to enable timer"
         return 1
     fi
+}
+
+#--- Hook: Pacman Integration -------------------------------------------------
+n0dm_hook() {
+    local action="${1:-}"
+    local hook_dir="/etc/pacman.d/hooks"
+    local hook_file="$hook_dir/n0dm-sync.hook"
+    local n0dm_path="$(command -v n0dm 2>/dev/null || echo "$HOME/.local/bin/n0dm")"
+    
+    case "$action" in
+        install)
+            # Check if we have sudo
+            if [[ $EUID -ne 0 ]] && ! sudo -v 2>/dev/null; then
+                print_err "Root privileges required. Run with sudo or install manually."
+                return 1
+            fi
+            
+            # Check if hook already exists
+            if [[ -f "$hook_file" ]]; then
+                print_warn "Hook already exists at $hook_file"
+                read -p "Overwrite? [y/N] " -n 1 -r
+                echo
+                [[ $REPLY =~ ^[Yy]$ ]] || { print_info "Keeping existing hook"; return 0; }
+            fi
+            
+            # Create hook directory if needed
+            sudo mkdir -p "$hook_dir"
+            
+            # Create hook file
+            sudo tee "$hook_file" > /dev/null <<EOF
+[Trigger]
+Operation = Upgrade
+Operation = Install
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = Syncing dotfiles after pacman transaction...
+When = PostTransaction
+Exec = /usr/bin/su - ${USER} -c '${n0dm_path} sync --yes'
+EOF
+            
+            print_ok "Hook installed: $hook_file"
+            print_info "n0dm will sync after every pacman operation"
+            return 0
+            ;;
+        uninstall|remove)
+            if [[ $EUID -ne 0 ]] && ! sudo -v 2>/dev/null; then
+                print_err "Root privileges required."
+                return 1
+            fi
+            
+            if [[ -f "$hook_file" ]]; then
+                sudo rm -f "$hook_file"
+                print_ok "Hook removed: $hook_file"
+            else
+                print_warn "No hook found at $hook_file"
+            fi
+            return 0
+            ;;
+        status)
+            if [[ -f "$hook_file" ]]; then
+                print_ok "Hook is installed: $hook_file"
+                echo
+                echo "Content:"
+                sudo cat "$hook_file"
+            else
+                print_warn "No hook installed"
+                print_info "Run 'n0dm hook install' to add it"
+            fi
+            return 0
+            ;;
+        ""|-h|--help|help)
+            echo "Usage: n0dm hook [action]"
+            echo ""
+            echo "Actions:"
+            echo "  install    Install pacman hook (requires sudo)"
+            echo "  uninstall  Remove pacman hook (requires sudo)"
+            echo "  status     Check if hook is installed"
+            echo ""
+            echo "Examples:"
+            echo "  n0dm hook install    # Install hook (runs sync after pacman)"
+            echo "  n0dm hook status     # Check hook status"
+            echo "  n0dm hook uninstall  # Remove hook"
+            echo ""
+            echo "Note: Works with pacman, paru, yay, and other libalpm-based helpers."
+            return 0
+            ;;
+        *)
+            print_err "Unknown action: $action"
+            echo "Run 'n0dm hook' for usage"
+            return 1
+            ;;
+    esac
 }
 
 #--- Atomic Self-Update --------------------------------------------------------
@@ -1052,6 +1147,7 @@ ${BOLD}Enhanced Commands (N0DM specific):${RESET}
   untrack <file> [files...] Remove from tracking, keep file (wraps yadm rm --cached)
   sync [message]            Safe sync with SMART backup: auto-generates commit message
   schedule [freq]           Enable auto-sync timer (hourly/daily/weekly/off/status)
+  hook [action]              Manage pacman hook (install/uninstall/status)
   backup [label]            Create manual backup of tracked files
   restore <id>              Restore from n0dm backup (use 'backups' to see IDs)
   backups                   List available n0dm backups
@@ -1121,9 +1217,10 @@ ${BOLD}Automation:${RESET}
   n0dm schedule status                   # Check timer status
   n0dm schedule off                      # Disable auto-sync
 
-  # Pacman hook (system-wide):
-  # Requires manual setup - see README
-  # Cron: 0 * * * * /home/user/.local/bin/n0dm sync --yes --no-backup
+  # Pacman hook (runs after every pacman/paru/yay operation):
+  n0dm hook install                      # Install pacman hook (needs sudo)
+  n0dm hook status                       # Check hook status
+  n0dm hook uninstall                    # Remove pacman hook
 EOF
 )
     echo -e "$help_text"
@@ -1222,6 +1319,9 @@ main() {
             ;;
         schedule)
             n0dm_schedule "$@"
+            ;;
+        hook)
+            n0dm_hook "$@"
             ;;
         #--- All other commands: Full passthrough to Yadm ---
         *)
