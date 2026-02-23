@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #===============================================================================
 # N0DM - Enhanced Yadm Wrapper for Arch Linux
-# Version: 1.5.1
+# Version: 1.6.0
 # Combines Yadm's reliability with smart backups and safety features
 #===============================================================================
 set -euo pipefail
 
 #--- Configuration -------------------------------------------------------------
-readonly N0DM_VERSION="1.5.1"
+readonly N0DM_VERSION="1.6.0"
 readonly N0DM_UPDATE_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm"
 readonly N0DM_DATA_DIR="${HOME}/.local/share/n0dm"
 readonly N0DM_BACKUP_DIR="${N0DM_DATA_DIR}/backups"
@@ -26,6 +26,16 @@ print_err()   { echo -e "${RED}${CROSS}${RESET} $*" >&2; }
 print_info()  { echo -e "${BLUE}${ARROW}${RESET} $*"; }
 print_warn()  { echo -e "${YELLOW}${WARN}${RESET} $*"; }
 print_notice(){ echo -e "${MAGENTA}${INFO}${RESET} $*"; }
+
+send_notification() {
+    local title="$1"
+    local message="$2"
+    local urgency="${3:-normal}"
+    
+    if command -v notify-send &>/dev/null; then
+        notify-send -u "$urgency" "$title" "$message" 2>/dev/null || true
+    fi
+}
 
 #--- Helpers -------------------------------------------------------------------
 ensure_dirs() {
@@ -296,7 +306,9 @@ n0dm_safe_sync() {
     local no_backup="${2:-false}"
     local dry_run="${3:-false}"
     local force="${4:-false}"
+    local safe_mode="${5:-false}"
     local yadm_git_dir; yadm_git_dir=$(get_yadm_git_dir)
+    local sync_success=false
     
     # Auto-generate message if not provided
     if [[ -z "$message" ]]; then
@@ -372,6 +384,11 @@ n0dm_safe_sync() {
                 print_err "Merge conflicts detected!"
                 print_info "Resolve with: n0dm mergetool"
                 print_info "Then run: n0dm sync to complete"
+                # Abort the merge
+                yadm merge --abort 2>/dev/null || true
+                if [[ "$safe_mode" == "true" || "$yes_mode" == "true" ]]; then
+                    send_notification "n0dm Conflict Detected" "Merge conflicts need resolution" "critical"
+                fi
                 return 1
             fi
         fi
@@ -405,19 +422,32 @@ n0dm_safe_sync() {
                 print_err "Push failed:"
                 echo "$push_output"
             fi
+            if [[ "$safe_mode" == "true" || "$yes_mode" == "true" ]]; then
+                send_notification "n0dm Sync Failed" "Push failed - check manually" "critical"
+            fi
             return 1
         fi
     else
         if ! yadm push 2>&1; then
             print_err "Push failed. Your changes are committed locally."
+            if [[ "$safe_mode" == "true" || "$yes_mode" == "true" ]]; then
+                send_notification "n0dm Sync Failed" "Push rejected - check manually" "critical"
+            fi
             return 1
         fi
     fi
 
     print_ok "Sync complete!"
+    sync_success=true
 
     # Post-sync cleanup (always run to maintain retention)
     cleanup_backups
+    
+    # Send success notification for automated runs
+    if [[ "$yes_mode" == "true" ]]; then
+        send_notification "n0dm Sync Complete" "Dotfiles synced successfully" "normal"
+    fi
+    
     return 0
 }
 
@@ -433,6 +463,106 @@ n0dm_check_conflicts() {
         return 1
     fi
     return 0
+}
+
+#--- Sync Health Check ---------------------------------------------------------
+n0dm_health() {
+    local yadm_git_dir; yadm_git_dir=$(get_yadm_git_dir)
+    local issues=0
+    
+    echo -e "${BOLD}=== n0dm Health Check ===${RESET}"
+    echo
+    
+    # Check yadm is initialized
+    print_info "Checking yadm repository..."
+    if yadm status &>/dev/null; then
+        print_ok "Yadm repository initialized"
+    else
+        print_err "Yadm not initialized"
+        issues=$((issues + 1))
+    fi
+    
+    # Check remote configured
+    print_info "Checking remote configuration..."
+    if yadm remote get-url origin &>/dev/null; then
+        local remote_url
+        remote_url=$(yadm remote get-url origin)
+        print_ok "Remote configured: $remote_url"
+        
+        # Check if can reach remote
+        print_info "Checking remote connectivity..."
+        if git ls-remote --exit-code origin &>/dev/null; then
+            print_ok "Remote is reachable"
+        else
+            print_warn "Remote may not be reachable"
+        fi
+    else
+        print_err "No remote configured"
+        issues=$((issues + 1))
+    fi
+    
+    # Check for conflicts
+    print_info "Checking for unresolved conflicts..."
+    if n0dm_check_conflicts &>/dev/null; then
+        print_ok "No merge conflicts"
+    else
+        print_err "Unresolved merge conflicts detected"
+        issues=$((issues + 1))
+    fi
+    
+    # Check backup status
+    print_info "Checking backup status..."
+    local backup_count=0
+    if [[ -d "$N0DM_BACKUP_DIR" ]]; then
+        backup_count=$(find "$N0DM_BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+    fi
+    echo "  Backups stored: $backup_count / $MAX_BACKUPS"
+    echo "  Retention: $BACKUP_RETENTION_DAYS days"
+    
+    if [[ $backup_count -eq 0 ]]; then
+        print_warn "No backups available"
+        echo "  Run 'n0dm backup' to create first backup"
+    else
+        print_ok "Backups available"
+    fi
+    
+    # Check last sync
+    print_info "Checking sync status..."
+    local has_upstream
+    has_upstream=$(git --git-dir="$yadm_git_dir" rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || echo "")
+    if [[ -n "$has_upstream" ]]; then
+        local local_rev remote_rev
+        local_rev=$(git --git-dir="$yadm_git_dir" rev-parse HEAD)
+        remote_rev=$(git --git-dir="$yadm_git_dir" rev-parse @{u})
+        if [[ "$local_rev" == "$remote_rev" ]]; then
+            print_ok "Local and remote are in sync"
+        else
+            print_warn "Local and remote differ - run 'n0dm sync'"
+            issues=$((issues + 1))
+        fi
+    else
+        print_warn "No upstream branch configured"
+    fi
+    
+    # Check systemd timer if enabled
+    if command -v systemctl &>/dev/null; then
+        print_info "Checking auto-sync timer..."
+        if systemctl --user is-enabled n0dm-sync.timer &>/dev/null; then
+            print_ok "Auto-sync timer is enabled"
+            systemctl --user list-timers --no-pager | grep n0dm-sync || true
+        else
+            print_info "Auto-sync timer is not enabled"
+        fi
+    fi
+    
+    echo
+    if [[ $issues -eq 0 ]]; then
+        print_ok "Health check passed - no issues found"
+        return 0
+    else
+        print_err "Health check found $issues issue(s)"
+        return 1
+    fi
 }
 
 #--- Connect to Remote ---------------------------------------------------------
@@ -1153,6 +1283,7 @@ ${BOLD}Enhanced Commands (N0DM specific):${RESET}
   backups                   List available n0dm backups
   cleanup                   Remove old backups per retention policy
   conflicts                 Check for unresolved merge conflicts
+  health                    Run health check (also: doctor)
   status                    Show yadm status + n0dm backup info
   update                    Check for and install n0dm updates
   mergetool                 Launch configured merge tool for conflicts
@@ -1175,6 +1306,7 @@ ${BOLD}Options (for sync):${RESET}
   --yes                     Auto-confirm prompts (for automation)
   --verbose                 Show detailed sync analysis
   --force                   Force push (overwrite remote on first sync)
+  --safe                    Abort on any error, send notifications
   (no message)              Auto-generates commit message from git diff
 
 ${BOLD}Environment Variables:${RESET}
@@ -1207,6 +1339,8 @@ ${BOLD}Examples:${RESET}
   n0dm push                              # Push to GitHub
   n0dm list                              # List tracked files
   n0dm status                            # Enhanced status
+  n0dm health                            # Run health check
+  n0dm sync --safe --yes                 # Safe auto-sync with notifications
   n0dm update                            # Self-update n0dm
   n0dm yadm-restore .bashrc              # Access native yadm restore
 
@@ -1232,7 +1366,7 @@ main() {
     load_config
     
     # Parse global flags first
-    local no_backup=false dry_run=false yes_mode=false verbose=false force=false
+    local no_backup=false dry_run=false yes_mode=false verbose=false force=false safe_mode=false
     local args=()
 
     while [[ $# -gt 0 ]]; do
@@ -1242,6 +1376,7 @@ main() {
             --yes) yes_mode=true; export N0DM_YES=true; shift ;;
             --verbose) verbose=true; shift ;;
             --force) force=true; shift ;;
+            --safe) safe_mode=true; shift ;;
             -*) args+=("$1"); shift ;;
             *) args+=("$1"); shift ;;
         esac
@@ -1259,7 +1394,7 @@ main() {
             n0dm_clone "$@"
             ;;
         sync)
-            n0dm_safe_sync "${1:-Auto-sync}" "$no_backup" "$dry_run" "$force"
+            n0dm_safe_sync "${1:-Auto-sync}" "$no_backup" "$dry_run" "$force" "$safe_mode"
             ;;
         track)
             n0dm_track "$@"
@@ -1283,6 +1418,9 @@ main() {
             ;;
         conflicts)
             n0dm_check_conflicts
+            ;;
+        health|doctor)
+            n0dm_health
             ;;
         status)
             n0dm_status "$@"
