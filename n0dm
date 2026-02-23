@@ -445,10 +445,10 @@ n0dm_init() {
 
     print_ok "Local repository initialized"
 
-    # Create .n0domignore if it doesn't exist
-    if [[ ! -f "$HOME/.n0domignore" ]]; then
-        print_info "Creating default .n0domignore..."
-        cat > "$HOME/.n0domignore" <<'IGNORE_EOF'
+    # Create .n0dmignore if it doesn't exist
+    if [[ ! -f "$HOME/.n0dmignore" ]]; then
+        print_info "Creating default .n0dmignore..."
+        cat > "$HOME/.n0dmignore" <<'IGNORE_EOF'
 # Package caches
 .bun/
 .npm/
@@ -503,9 +503,9 @@ projects/
 .config/pipewire/
 .local/share/Trash/
 
-# See https://github.com/noeltz/n0dm/blob/main/.n0domignore for full template
+# See https://github.com/noeltz/n0dm/blob/main/.n0dmignore for full template
 IGNORE_EOF
-        print_ok "Created ~/.n0domignore with sensible defaults"
+        print_ok "Created ~/.n0dmignore with sensible defaults"
     fi
 
     # Prompt for remote setup
