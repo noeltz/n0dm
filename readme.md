@@ -535,10 +535,25 @@ When the same file is edited on two machines:
 ```bash
 $ n0dm sync
 ⚠ Merge conflicts detected!
-ℹ Resolve with: n0dm mergetool
+=== Resolving Merge Conflicts ===
+
+=== Conflict #1: .bashrc ===
+--- Local changes (yours) ---
++alias ll='ls -la'
+--- Remote changes (GitHub) ---
++alias ll='ls -la -h'
+
+Choose: (L)ocal, (R)emote, (M)erge, (S)kip, (Q)uit: L
+✓ Kept local version
+✓ Run 'n0dm sync' to complete
 ```
 
-**To resolve:**
+**To resolve (automatic):**
+1. Run `n0dm conflicts --fix` (opens interactive wizard)
+2. For each conflict, choose: Local / Remote / Merge / Skip
+3. Run `n0dm sync` again to complete
+
+**To resolve (visual):**
 1. Run `n0dm mergetool` (opens Meld, vimdiff, or your configured tool)
 2. Edit the file visually, save, and close
 3. Run `n0dm sync` again to complete
@@ -572,7 +587,7 @@ $ n0dm sync
 | **"No commits yet"** | Run `n0dm sync "Initial"` after tracking files |
 | **"Remote has different history"** | Use `n0dm sync --force` for first push |
 | **"File not tracked"** | Run `n0dm track ~/.file` first |
-| **"Merge conflicts"** | Run `n0dm mergetool` to resolve visually |
+| **"Merge conflicts"** | Run `n0dm conflicts --fix` or `n0dm mergetool` |
 | **"Nothing to commit"** | Check `n0dm status` for staged changes |
 
 ### Quick Diagnostics

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #===============================================================================
 # N0DM - Enhanced Yadm Wrapper for Arch Linux
-# Version: 1.6.1
+# Version: 1.7.0
 # Combines Yadm's reliability with smart backups and safety features
 #===============================================================================
 set -euo pipefail
 
 #--- Configuration -------------------------------------------------------------
-readonly N0DM_VERSION="1.6.1"
+readonly N0DM_VERSION="1.7.0"
 readonly N0DM_UPDATE_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm"
 readonly N0DM_DATA_DIR="${HOME}/.local/share/n0dm"
 readonly N0DM_BACKUP_DIR="${N0DM_DATA_DIR}/backups"
@@ -382,14 +382,25 @@ n0dm_safe_sync() {
             print_warn "Fast-forward pull failed. Checking for conflicts..."
             if yadm merge --no-commit --no-ff origin/$(yadm branch --show-current) 2>&1 | grep -q "CONFLICT"; then
                 print_err "Merge conflicts detected!"
-                print_info "Resolve with: n0dm mergetool"
-                print_info "Then run: n0dm sync to complete"
-                # Abort the merge
-                yadm merge --abort 2>/dev/null || true
+                
+                # In safe/yes mode, abort and notify
                 if [[ "$safe_mode" == "true" || "$yes_mode" == "true" ]]; then
+                    print_info "Resolve with: n0dm conflicts --fix"
+                    yadm merge --abort 2>/dev/null || true
                     send_notification "n0dm Conflict Detected" "Merge conflicts need resolution" "critical"
+                    return 1
                 fi
-                return 1
+                
+                # Otherwise, launch interactive resolver
+                print_info "Starting interactive conflict resolver..."
+                echo
+                if n0dm_resolve_conflicts; then
+                    print_ok "Conflicts resolved, proceeding with sync..."
+                else
+                    print_warn "Conflict resolution not complete"
+                    print_info "Run 'n0dm conflicts --fix' to resolve remaining conflicts"
+                    return 1
+                fi
             fi
         fi
     fi
@@ -453,15 +464,115 @@ n0dm_safe_sync() {
 
 #--- Conflict Helper -----------------------------------------------------------
 n0dm_check_conflicts() {
+    local fix_mode="${1:-}"
     local yadm_git_dir; yadm_git_dir=$(get_yadm_git_dir)
 
-    if [[ -n "$(git --git-dir="$yadm_git_dir" diff --name-only --diff-filter=U 2>/dev/null)" ]]; then
+    local conflicts
+    conflicts=$(git --git-dir="$yadm_git_dir" diff --name-only --diff-filter=U 2>/dev/null)
+    
+    if [[ -n "$conflicts" ]]; then
         print_err "Unresolved merge conflicts:"
-        git --git-dir="$yadm_git_dir" diff --name-only --diff-filter=U
+        echo "$conflicts"
         echo
-        print_info "Resolve with: n0dm mergetool"
+        
+        # If --fix flag provided, launch resolver
+        if [[ "$fix_mode" == "--fix" ]]; then
+            n0dm_resolve_conflicts
+            return $?
+        fi
+        
+        print_info "Resolve with: n0dm conflicts --fix"
+        print_info "Or use visual editor: n0dm mergetool"
         return 1
     fi
+    return 0
+}
+
+#--- Conflict Resolver ----------------------------------------------------------
+n0dm_resolve_conflicts() {
+    local yadm_git_dir; yadm_git_dir=$(get_yadm_git_dir)
+    
+    # Check for conflicts
+    local conflicts
+    conflicts=$(git --git-dir="$yadm_git_dir" diff --name-only --diff-filter=U 2>/dev/null)
+    
+    if [[ -z "$conflicts" ]]; then
+        print_ok "No merge conflicts to resolve"
+        return 0
+    fi
+    
+    echo -e "${BOLD}=== Resolving Merge Conflicts ===${RESET}"
+    echo
+    
+    local conflict_count=0
+    local resolved_count=0
+    while IFS= read -r file; do
+        [[ -z "$file" ]] && continue
+        conflict_count=$((conflict_count + 1))
+        
+        local full_path="${HOME}/${file}"
+        
+        echo -e "${RED}=== Conflict #$conflict_count: $file ===${RESET}"
+        
+        # Show diff
+        echo -e "${YELLOW}--- Local changes (yours) ---${RESET}"
+        git --git-dir="$yadm_git_dir" show ":1:$file" 2>/dev/null | head -20 || echo "(empty)"
+        echo
+        echo -e "${CYAN}--- Remote changes (GitHub) ---${RESET}"
+        git --git-dir="$yadm_git_dir" show ":2:$file" 2>/dev/null | head -20 || echo "(empty)"
+        echo
+        
+        # Prompt user
+        local choice=""
+        while [[ ! "$choice" =~ ^[LlRrMmSsQq]$ ]]; do
+            echo -n "Choose: (L)ocal, (R)emote, (M)erge, (S)kip, (Q)uit: "
+            read -n 1 -r choice
+            echo
+            [[ -z "$choice" ]] && choice="Q"  # Default to Quit
+        done
+        
+        case "$choice" in
+            L|l)
+                git --git-dir="$yadm_git_dir" show ":1:$file" > "$full_path" 2>/dev/null || true
+                yadm add "$file" 2>/dev/null || true
+                print_ok "Kept local version"
+                resolved_count=$((resolved_count + 1))
+                ;;
+            R|r)
+                git --git-dir="$yadm_git_dir" show ":2:$file" > "$full_path" 2>/dev/null || true
+                yadm add "$file" 2>/dev/null || true
+                print_ok "Kept remote version"
+                resolved_count=$((resolved_count + 1))
+                ;;
+            M|m)
+                if command -v meld &>/dev/null; then
+                    meld "$full_path" &>/dev/null &
+                    print_info "Opened meld for $file"
+                    print_info "After saving in meld, run: n0dm add $file"
+                elif [[ -n "${EDITOR:-}" ]]; then
+                    "$EDITOR" "$full_path"
+                    print_info "After saving, run: n0dm add $file"
+                else
+                    print_warn "No merge tool configured."
+                    print_info "Install meld or set EDITOR variable, then run: n0dm mergetool"
+                fi
+                ;;
+            S|s)
+                print_warn "Skipped - will need manual resolution"
+                ;;
+            Q|q)
+                echo
+                print_info "Conflict resolution aborted"
+                print_info "Resolved: $resolved_count / $conflict_count file(s)"
+                print_info "Run 'n0dm conflicts' to check status later"
+                return 1
+                ;;
+        esac
+        echo
+    done <<< "$conflict_count"
+    
+    print_ok "Conflict resolution complete: $resolved_count / $conflict_count resolved"
+    print_info "Run 'n0dm sync' to complete the merge"
     return 0
 }
 
@@ -1283,7 +1394,7 @@ ${BOLD}Enhanced Commands (N0DM specific):${RESET}
   restore <id>              Restore from n0dm backup (use 'backups' to see IDs)
   backups                   List available n0dm backups
   cleanup                   Remove old backups per retention policy
-  conflicts                 Check for unresolved merge conflicts
+  conflicts [--fix]           Check for unresolved merge conflicts
   health                    Run health check (also: doctor)
   status                    Show yadm status + n0dm backup info
   update                    Check for and install n0dm updates
