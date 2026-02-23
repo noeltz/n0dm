@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #===============================================================================
 # N0DM - Enhanced Yadm Wrapper for Arch Linux
-# Version: 1.4.0
+# Version: 1.4.1
 # Combines Yadm's reliability with smart backups and safety features
 #===============================================================================
 set -euo pipefail
 
 #--- Configuration -------------------------------------------------------------
-readonly N0DM_VERSION="1.4.0"
+readonly N0DM_VERSION="1.4.1"
 readonly N0DM_UPDATE_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm"
 readonly N0DM_DATA_DIR="${HOME}/.local/share/n0dm"
 readonly N0DM_BACKUP_DIR="${N0DM_DATA_DIR}/backups"
@@ -544,6 +544,86 @@ IGNORE_EOF
     print_info "Run 'n0dm status' to see repository state"
 }
 
+#--- Clone Repository ----------------------------------------------------------
+n0dm_clone() {
+    local repo="${1:-}"
+    local force=false
+    local yadm_git_dir; yadm_git_dir=$(get_yadm_git_dir)
+    
+    # Parse flags
+    shift || true
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -f|--force) force=true; shift ;;
+            -*) shift ;;
+            *) shift ;;
+        esac
+    done
+    
+    # Check if repo argument provided
+    if [[ -z "$repo" ]]; then
+        print_err "No repository specified."
+        print_info "Usage: n0dm clone <repo> [-f]"
+        print_info "Example: n0dm clone noeltz/n0ctachiri"
+        print_info "        n0dm clone https://github.com/noeltz/n0ctachiri.git"
+        return 1
+    fi
+    
+    # Check if local repo already exists
+    if [[ -d "$yadm_git_dir" ]]; then
+        if [[ "$force" != "true" ]]; then
+            print_err "Git repo already exists. [$yadm_git_dir]"
+            print_info "Use '-f' to force overwrite (will delete local data!)"
+            return 1
+        else
+            print_warn "Force flag used - removing existing repo..."
+            rm -rf "$yadm_git_dir"
+        fi
+    fi
+    
+    # Convert short format to full URL if needed
+    local remote_url
+    if [[ "$repo" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$ ]]; then
+        remote_url="https://github.com/${repo}.git"
+    elif [[ "$repo" =~ ^git@github\.com: ]]; then
+        remote_url="$repo"
+    elif [[ "$repo" =~ ^https?:// ]]; then
+        remote_url="$repo"
+    else
+        print_err "Invalid repository format. Use 'username/repo' or full URL."
+        return 1
+    fi
+    
+    print_info "Cloning $remote_url..."
+    
+    # Clone the repository using yadm
+    if ! yadm clone "$remote_url" 2>&1; then
+        print_err "Unable to clone the repository"
+        print_info "Make sure:"
+        echo "  1. You're authenticated with GitHub (run: gh auth login)"
+        echo "  2. The repository exists and is accessible"
+        echo "  3. You have network connectivity"
+        return 1
+    fi
+    
+    print_ok "Repository cloned successfully"
+    
+    # Checkout files to home directory
+    print_info "Checking out files to home directory..."
+    local checkout_output
+    checkout_output=$(yadm checkout . 2>&1)
+    if echo "$checkout_output" | grep -q "did not match any file"; then
+        print_warn "No files checked out - repository may be empty"
+    elif echo "$checkout_output" | grep -q "left unmodified\|different"; then
+        print_warn "Local files differ from repository"
+        print_info "To overwrite local files, run: yadm checkout . --force"
+        print_info "To keep local files, run: n0dm status to review differences"
+    fi
+    
+    print_ok "Clone complete!"
+    print_info "Run 'n0dm status' to see the repository state"
+}
+
 #--- Atomic Self-Update --------------------------------------------------------
 self_update() {
     print_info "Checking for updates..."
@@ -782,6 +862,7 @@ ${BOLD}Usage:${RESET} n0dm <command> [options]
 
 ${BOLD}Enhanced Commands (N0DM specific):${RESET}
   init                      Initialize repo + optional GitHub remote setup
+  clone <repo> [-f]         Clone from GitHub and checkout files (e.g., user/repo)
   connect [repo]            Connect to GitHub remote (e.g., user/repo)
   track <file> [files...]   Add files to tracking (wraps yadm add)
   untrack <file> [files...] Remove from tracking, keep file (wraps yadm rm --cached)
@@ -796,7 +877,7 @@ ${BOLD}Enhanced Commands (N0DM specific):${RESET}
   mergetool                 Launch configured merge tool for conflicts
 
 ${BOLD}Yadm Passthrough Commands (ALL native commands work):${RESET}
-  init, clone, add, commit, push, pull, merge, branch, remote, checkout
+  add, commit, push, pull, merge, branch, remote, checkout
   reset, restore, clean, config, log, diff, enter, alt, encrypt, decrypt
   bootstrap, help, version, list, status
   → All other commands pass directly to yadm unchanged
@@ -827,7 +908,8 @@ ${BOLD}Smart Backup Logic:${RESET}
 
 ${BOLD}Examples:${RESET}
   n0dm init                              # Initialize yadm repo
-  n0dm clone git@github.com:user/repo    # Clone existing repo
+  n0dm clone noeltz/n0ctachiri          # Clone from GitHub (short format)
+  n0dm clone noeltz/n0ctachiri -f      # Force clone (overwrite local)
   n0dm track ~/.bashrc                   # Add file to tracking
   n0dm untrack ~/.cache/file             # Remove from tracking (keep file)
   n0dm sync "Update config"              # Safe sync with smart backup
@@ -879,6 +961,9 @@ main() {
         #--- Enhanced N0DM Commands ---
         init)
             n0dm_init "$@"
+            ;;
+        clone)
+            n0dm_clone "$@"
             ;;
         sync)
             n0dm_safe_sync "${1:-Auto-sync}" "$no_backup" "$dry_run" "$force"
