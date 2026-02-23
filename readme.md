@@ -85,7 +85,7 @@ n0dm clone username/dotfiles
 > 💡 **First time?** `n0dm init` will:
 > 1. Ask for your GitHub username/repo (e.g., `alice/dotfiles`)
 > 2. Create the repo on GitHub if it doesn't exist
-> 3. Set up a clean `.n0domignore` file (like `.gitignore` for dotfiles)
+> 3. Set up a `~/.gitignore` file to exclude caches and large folders
 > 4. Configure Git with your name/email
 
 ### 4️⃣ Track Your First File
@@ -106,6 +106,115 @@ n0dm sync "Added my bashrc"
 ```
 
 🎉 **You're done!** Your dotfiles are now safely backed up and ready to sync across devices.
+
+---
+
+## 📝 Managing What Gets Tracked
+
+### ⚠️ Important: Don't Track Everything!
+
+Unlike regular Git repos, your home directory contains **thousands of files** you don't want in version control. n0dm helps you track only what matters.
+
+### 🛡️ The `.gitignore` Approach
+
+n0dm creates a `~/.gitignore` file during `init` with this pattern:
+
+```gitignore
+# Ignore everything at root level
+*
+
+# But allow directories we want to track
+!.bashrc
+!.bash_profile
+!.zshrc
+!.profile
+!.gitignore
+!.config/
+
+# Ignore specific .config subdirectories (not tracked)
+.config/*
+!.config/kitty/
+!.config/nvim/
+!.config/niri/
+```
+
+**How it works:**
+- `*` — Ignore all files by default
+- `!.bashrc` — **Un-ignore** specific files (the `!` means "except")
+- `.config/*` — Ignore everything in `.config`
+- `!.config/kitty/` — Except the kitty folder
+
+### ✅ Best Practices
+
+| Do ✅ | Don't ❌ |
+|-------|---------|
+| `yadm add ~/.bashrc` — explicit files | `yadm add -A` — adds EVERYTHING |
+| `yadm add ~/.config/nvim/` — specific dirs | `yadm add .` — adds from root |
+| Create `~/.gitignore` first | Skip the ignore file |
+| Commit `.gitignore` first | Add files before `.gitignore` |
+
+### 📋 Recommended Workflow
+
+```bash
+# 1. Initialize (creates ~/.gitignore automatically)
+n0dm init
+
+# 2. Add .gitignore FIRST and commit it
+yadm add ~/.gitignore
+yadm commit -m "Add .gitignore"
+
+# 3. Now add your dotfiles explicitly
+yadm add ~/.bashrc ~/.zshrc ~/.gitconfig
+yadm add ~/.config/kitty/ ~/.config/nvim/
+
+# 4. Sync to GitHub
+n0dm sync "Initial dotfiles"
+```
+
+### 🔍 Check What's Being Tracked
+
+```bash
+# See staged files before committing
+yadm status --short
+
+# List all tracked files
+yadm list
+
+# See untracked files (what would be added with -A)
+yadm status -u
+```
+
+### 🚫 Common Files to Ignore
+
+```gitignore
+# Caches
+.cache/
+.bun/
+.npm/
+.pnpm/
+.yarn/
+node_modules/
+
+# Downloads and media
+Downloads/
+Pictures/
+Videos/
+Music/
+Public/
+
+# System and state
+.local/share/Trash/
+.local/state/
+.thumbnails/
+
+# IDE and editor caches
+.vscode/
+.idea/
+*.swp
+*.swo
+```
+
+> 💡 **Tip:** The default `~/.gitignore` created by `n0dm init` already includes these. Customize it to match your setup!
 
 ---
 
