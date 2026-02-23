@@ -60,10 +60,25 @@ sudo pacman -S github-cli
 
 ### 2️⃣ Install n0dm
 
+#### 🚀 Quick Install (Recommended)
+
+```bash
+# One-line install - handles dependencies automatically!
+curl -fsSL https://raw.githubusercontent.com/noeltz/n0dm/main/install.sh | bash
+```
+
+This will:
+- ✅ Check for required packages (yadm, git, curl)
+- ✅ Install missing dependencies via pacman
+- ✅ Download and install n0dm to `~/.local/bin`
+- ✅ Verify the installation works
+
+#### 📦 Manual Install
+
 ```bash
 # Download the script
 mkdir -p ~/.local/bin
-curl -fsSL https://raw.githubusercontent.com/yourusername/n0dm/main/n0dm \
+curl -fsSL https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm \
   -o ~/.local/bin/n0dm
 chmod +x ~/.local/bin/n0dm
 
