@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #===============================================================================
 # N0DM - Enhanced Yadm Wrapper for Arch Linux
-# Version: 1.3.1
+# Version: 1.3.2
 # Combines Yadm's reliability with smart backups and safety features
 #===============================================================================
 set -euo pipefail
 
 #--- Configuration -------------------------------------------------------------
-readonly N0DM_VERSION="1.3.1"
+readonly N0DM_VERSION="1.3.2"
 readonly N0DM_UPDATE_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm"
 readonly N0DM_DATA_DIR="${HOME}/.local/share/n0dm"
 readonly N0DM_BACKUP_DIR="${N0DM_DATA_DIR}/backups"
@@ -251,11 +251,6 @@ n0dm_safe_sync() {
         return 1
     fi
 
-    # Ensure .gitignore exists in yadm repo (copied from .n0dmignore)
-    if [[ -f "$HOME/.n0dmignore" ]]; then
-        cp "$HOME/.n0dmignore" "$HOME/.gitignore"
-    fi
-
     # Check for remote
     if ! yadm remote get-url origin &>/dev/null; then
         print_err "No remote configured. Run 'n0dm connect' first."
@@ -450,73 +445,46 @@ n0dm_init() {
 
     print_ok "Local repository initialized"
 
-    # Create .n0dmignore if it doesn't exist
-    if [[ ! -f "$HOME/.n0dmignore" ]]; then
-        print_info "Creating default .n0dmignore..."
-        cat > "$HOME/.n0dmignore" <<'IGNORE_EOF'
-# Package caches
+    # Create .gitignore template if it doesn't exist
+    if [[ ! -f "$HOME/.gitignore" ]]; then
+        print_info "Creating default .gitignore..."
+        cat > "$HOME/.gitignore" <<'IGNORE_EOF'
+# Ignore everything by default
+/*
+
+# Whitelist dotfiles you want to track
+!.bashrc
+!.bash_profile
+!.zshrc
+!.profile
+!.bash_logout
+!.gitconfig
+!.inputrc
+!.tmux.conf
+!.vimrc
+!.nvim/
+!.config/
+!.local/bin/
+!.local/share/n0dm/
+
+# But ignore these common large/problematic directories
+.cache/
 .bun/
 .npm/
 .pnpm/
 .yarn/
-.node-gyp/
-.cache/
-.thumbnails/
 node_modules/
-
-# AUR builds
-.cache/paru/
-.cache/yay/
-
-# Downloads and media
 Downloads/
 Pictures/
 Videos/
 Music/
 Public/
-
-# Temporary files
-*.tmp
-*.swp
-*.swo
-*~
-
-# Logs
-*.log
-
-# IDE configs
-.vscode/
-.idea/
-
-# Container configs
-.docker/
-.minikube/
-
-# Large binaries
-*.iso
-*.img
-*.tar.gz
-*.zip
-
-# Development directories
-dev/
-code/
-projects/
-
-# Machine-specific configs
-.config/pulse/
-.config/pipewire/
 .local/share/Trash/
-
-# See https://github.com/noeltz/n0dm/blob/main/.n0dmignore for full template
+.local/state/
+.local/lib/
 IGNORE_EOF
-        print_ok "Created ~/.n0dmignore with sensible defaults"
-    fi
-
-    # Copy .n0dmignore to yadm repo as .gitignore (yadm uses .gitignore)
-    if [[ -f "$HOME/.n0dmignore" ]]; then
-        cp "$HOME/.n0dmignore" "$HOME/.gitignore"
-        print_info "Copied .n0dmignore to .gitignore for yadm"
+        print_ok "Created ~/.gitignore - customize to whitelist your dotfiles"
+        print_info "Add it first: yadm add ~/.gitignore"
     fi
 
     # Prompt for remote setup
