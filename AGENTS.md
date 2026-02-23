@@ -44,9 +44,9 @@ n0dm sync "Updated bashrc"  # Uses yadm, pushes to n0ctachiri
 ### Semantic Versioning: `MAJOR.MINOR.PATCH`
 
 ```
-Current: 1.2.0
-Next:    1.2.1  (patch fix)
-         1.3.0  (minor feature)
+Current: 1.4.1
+Next:    1.4.2  (patch fix)
+         1.5.0  (minor feature)
          2.0.0  (major breaking change)
 ```
 
@@ -58,27 +58,69 @@ Next:    1.2.1  (patch fix)
 | **MINOR** (0.1.0) | New features, backwards compatible | Add `connect` command, new `--force` flag |
 | **MAJOR** (1.0.0) | Breaking changes | Change config format, remove commands |
 
-### How to Update Version
+---
+
+## 🚀 Release Procedure
+
+### Complete Release Workflow
+
+Follow these steps to release a new version:
 
 ```bash
-# 1. Edit n0dm script header (lines 4-10)
-readonly N0DM_VERSION="1.2.1"
+# 1. Navigate to the development directory
+cd ~/dev/n0dm
 
-# 2. Update readme badge if major/minor
-# 3. Commit with descriptive message
-git commit -m "chore: bump version to 1.2.1"
+# 2. Make your code changes...
 
-# 4. Push so n0dm update works
+# 3. Test thoroughly
+bash -n n0dm                          # Syntax check
+./n0dm version                        # Verify version
+./n0dm help                           # Check help output
+./n0dm status                         # Test functionality
+
+# 4. Determine version bump type
+#    PATCH: 1.4.1 -> 1.4.2 (bug fixes)
+#    MINOR: 1.4.1 -> 1.5.0 (new features)
+#    MAJOR: 1.4.1 -> 2.0.0 (breaking changes)
+
+# 5. Update version in n0dm script (2 places!)
+#    Line 4:  # Version: 1.4.2
+#    Line 10: readonly N0DM_VERSION="1.4.2"
+
+# 6. Commit with descriptive message
+git add n0dm
+git commit -m "fix: add proper clone handler with force flag support
+
+- Add n0dm_clone function to handle clone as enhanced command
+- Support -f/--force flag to overwrite existing local repo
+- Auto-convert short format (user/repo) to full GitHub URL
+- Better error messages for auth and repo issues
+- Update help documentation
+
+Bump version to 1.4.2"
+
+# 7. Push to remote (IMPORTANT: must push for self-update to work)
 git push
 ```
 
 ### Version Update Checklist
 
-- [ ] Update `N0DM_VERSION` in `n0dm` script
-- [ ] Update version badge in `readme.md` (if applicable)
-- [ ] Add entry to changelog (if exists)
-- [ ] Test `./n0dm version` shows correct version
-- [ ] Test `./n0dm update` would detect the new version
+- [ ] Run `bash -n n0dm` - syntax check passes
+- [ ] Run `./n0dm version` - shows correct version
+- [ ] Run `./n0dm help` - displays properly
+- [ ] Update `N0DM_VERSION` in `n0dm` script (2 places: header comment + readonly)
+- [ ] Update version badge in `readme.md` (only for major/minor releases)
+- [ ] Push to remote with `git push`
+- [ ] Verify self-update works: `n0dm update` on another machine
+
+### Why Push is Required
+
+The `n0dm update` command fetches the script from:
+```
+https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm
+```
+
+Without pushing to the `main` branch, users cannot get the update via `n0dm update`.
 
 ---
 
@@ -344,38 +386,6 @@ shellcheck n0dm
 | First push | `./n0dm sync --force` | Creates upstream |
 | Normal sync | `./n0dm sync "msg"` | Backup + pull + push |
 | No changes | `./n0dm sync` | Skips backup |
-
----
-
-## 🚀 Release Process
-
-### Pre-Release Checklist
-
-- [ ] All tests pass
-- [ ] Version bumped in `n0dm` script
-- [ ] README updated (if UI/behavior changed)
-- [ ] Changelog entry added
-- [ ] `./n0dm update` would detect new version
-- [ ] Git history is clean and descriptive
-
-### Commit Message Format
-
-```
-type: short description
-
-- bullet point for notable change
-- bullet point for another change
-
-Fixes: #issue-number (if applicable)
-```
-
-**Types:**
-- `feat:` New feature
-- `fix:` Bug fix
-- `docs:` Documentation only
-- `style:` Formatting, no code change
-- `refactor:` Code restructuring
-- `chore:` Version bump, maintenance
 
 ---
 
