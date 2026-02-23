@@ -298,7 +298,7 @@ n0dm_safe_sync() {
 #--- Conflict Helper -----------------------------------------------------------
 n0dm_check_conflicts() {
     local yadm_git_dir; yadm_git_dir=$(get_yadm_git_dir)
-    
+
     if [[ -n "$(git --git-dir="$yadm_git_dir" diff --name-only --diff-filter=U 2>/dev/null)" ]]; then
         print_err "Unresolved merge conflicts:"
         git --git-dir="$yadm_git_dir" diff --name-only --diff-filter=U
@@ -307,6 +307,65 @@ n0dm_check_conflicts() {
         return 1
     fi
     return 0
+}
+
+#--- Connect to Remote ---------------------------------------------------------
+n0dm_connect() {
+    local repo="${1:-}"
+    local yadm_git_dir; yadm_git_dir=$(get_yadm_git_dir)
+
+    if [[ ! -d "$yadm_git_dir" ]]; then
+        print_err "Yadm repository not found. Run 'n0dm init' first."
+        return 1
+    fi
+
+    # Check if remote already exists
+    local existing_remote
+    existing_remote=$(git --git-dir="$yadm_git_dir" remote get-url origin 2>/dev/null || echo "")
+    if [[ -n "$existing_remote" ]]; then
+        print_warn "Remote already configured: $existing_remote"
+        if [[ "${N0DM_YES:-false}" != "true" ]]; then
+            read -p "Replace it? [y/N] " -n 1 -r
+            echo
+            [[ $REPLY =~ ^[Yy]$ ]] || { print_info "Keeping existing remote"; return 0; }
+        fi
+    fi
+
+    # If no repo specified, prompt for it
+    if [[ -z "$repo" ]]; then
+        print_info "Connect to a GitHub repository"
+        echo "  Format: username/repo  (e.g., alice/dotfiles)"
+        echo "  Or full URL: https://github.com/alice/dotfiles.git"
+        echo
+        read -p "Repository: " -r repo
+    fi
+
+    [[ -z "$repo" ]] && { print_err "No repository specified"; return 1; }
+
+    # Convert short form to GitHub URL if needed
+    local remote_url
+    if [[ "$repo" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$ ]]; then
+        remote_url="https://github.com/${repo}.git"
+    elif [[ "$repo" =~ ^git@github\.com: ]]; then
+        remote_url="$repo"
+    elif [[ "$repo" =~ ^https?:// ]]; then
+        remote_url="$repo"
+    else
+        print_err "Invalid repository format. Use 'username/repo' or full URL."
+        return 1
+    fi
+
+    # Add or set the remote
+    if [[ -n "$existing_remote" ]]; then
+        git --git-dir="$yadm_git_dir" remote set-url origin "$remote_url"
+    else
+        git --git-dir="$yadm_git_dir" remote add origin "$remote_url"
+    fi
+
+    print_ok "Remote configured: $remote_url"
+    print_info "Next steps:"
+    echo "  1. Create the repository on GitHub (if not exists)"
+    echo "  2. Run: n0dm push -u origin"
 }
 
 #--- Atomic Self-Update --------------------------------------------------------
@@ -369,7 +428,7 @@ n0dm_status() {
     echo -e "${BOLD}=== Yadm Repository Status ===${RESET}"
     yadm status "$@" 2>/dev/null || print_warn "Yadm not initialized"
     echo
-    
+
     # Then, append n0dm-specific backup info
     echo -e "${BOLD}=== N0DM Backup Status ===${RESET}"
     local count=0
@@ -381,11 +440,24 @@ n0dm_status() {
     echo "  Last backup epoch: $(get_last_backup_epoch)"
     echo "  Backup directory: $N0DM_BACKUP_DIR"
     echo
-    
+
     echo -e "${BOLD}=== N0DM Info ===${RESET}"
     echo "  Version: $N0DM_VERSION"
     echo "  Script: $(realpath "$0")"
-    
+
+    # Check for remote
+    local yadm_git_dir; yadm_git_dir=$(get_yadm_git_dir)
+    if [[ -d "$yadm_git_dir" ]]; then
+        local remote_url
+        remote_url=$(git --git-dir="$yadm_git_dir" remote get-url origin 2>/dev/null || echo "")
+        if [[ -n "$remote_url" ]]; then
+            echo -e "  ${GREEN}✓ Remote configured:${RESET} $remote_url"
+        else
+            echo -e "  ${YELLOW}⚠ No remote configured${RESET}"
+            echo -e "     ${BLUE}→ Run:${RESET} n0dm connect <user/repo>"
+        fi
+    fi
+
     # Smart backup preview
     if needs_smart_backup 2>/dev/null; then
         echo -e "  ${YELLOW}⚠ Tracked files have changed since last backup${RESET}"
@@ -425,6 +497,7 @@ ${BOLD}Enhanced Commands (N0DM specific):${RESET}
   cleanup                   Remove old backups per retention policy
   conflicts                 Check for unresolved merge conflicts
   status                    Show yadm status + n0dm backup info
+  connect [repo]            Connect to GitHub remote (e.g., user/repo)
   update                    Check for and install n0dm updates
   mergetool                 Launch configured merge tool for conflicts
 
@@ -556,6 +629,9 @@ main() {
             ;;
         version)
             echo "n0dm version ${N0DM_VERSION}"
+            ;;
+        connect)
+            n0dm_connect "$@"
             ;;
         #--- All other commands: Full passthrough to Yadm ---
         *)
