@@ -39,7 +39,7 @@
 ✅ Smart backups — only backup when files actually change (saves space!)
 ✅ Two-way sync — pull from GitHub, push your changes, resolve conflicts easily
 ✅ All Yadm commands — every native yadm command works with `n0dm` prefix
-✅ Atomic self-update — `n0dm update` keeps the tool itself current
+✅ Atomic self-update — `n0dm update` with SHA256 checksum verification
 ✅ Retention policy — auto-cleanup old backups, never fill your disk
 ✅ Non-technical friendly — clear messages, helpful prompts, safe defaults
 ```
@@ -373,7 +373,7 @@ graph LR
 
 | Command | What It Does | Example |
 |---------|-------------|---------|
-| `n0dm update` | Check for and install n0dm updates | `n0dm update` |
+| `n0dm update` | Check for and install n0dm updates (with SHA256 verification) | `n0dm update` |
 | `n0dm mergetool` | Open visual tool to resolve conflicts | `n0dm mergetool` |
 | `n0dm help` | Show help guide | `n0dm help` |
 
