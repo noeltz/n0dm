@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #===============================================================================
 # N0DM - Enhanced Yadm Wrapper for Arch Linux
-# Version: 1.7.2
+# Version: 1.8.0
 # Combines Yadm's reliability with smart backups and safety features
 #===============================================================================
 set -euo pipefail
 
 #--- Configuration -------------------------------------------------------------
-readonly N0DM_VERSION="1.7.2"
+readonly N0DM_VERSION="1.8.0"
 readonly N0DM_UPDATE_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm"
 readonly N0DM_DATA_DIR="${HOME}/.local/share/n0dm"
 readonly N0DM_BACKUP_DIR="${N0DM_DATA_DIR}/backups"
@@ -428,14 +428,42 @@ n0dm_safe_sync() {
         if [[ $push_status -ne 0 ]]; then
             # Check if it's a "repository not found" error
             if echo "$push_output" | grep -qi "not found"; then
-                print_err "Push failed. The remote repository may not exist yet."
-                print_info "Create it on GitHub:"
+                print_err "Push failed. The remote repository does not exist yet."
                 local remote_url
                 remote_url=$(git --git-dir="$yadm_git_dir" remote get-url origin 2>/dev/null)
                 local repo_name
                 repo_name=$(echo "$remote_url" | sed 's|.*/\([^/]*\)\.git$|\1|' | sed 's|^git@github\.com:||')
-                echo "  gh repo create $repo_name --public --push"
-                echo "Or visit: $remote_url"
+                
+                # Offer to create repo if gh is available
+                if command -v gh &>/dev/null; then
+                    echo
+                    print_info "I can create this repository for you automatically."
+                    if [[ "${N0DM_YES:-false}" == "true" ]]; then
+                        auto_confirm="y"
+                    else
+                        read -p "Create GitHub repo and push? [Y/n] " -n 1 -r auto_confirm
+                        echo
+                    fi
+                    
+                    if [[ $auto_confirm =~ ^[Yy]$ || "$auto_confirm" == "" ]]; then
+                        print_info "Creating repository on GitHub..."
+                        if gh repo create "$repo_name" --public --source=. --push 2>&1; then
+                            print_ok "Repository created and pushed successfully!"
+                        else
+                            print_err "Failed to create repository. It may already exist on GitHub."
+                            print_info "Try: gh repo create $repo_name --public --push"
+                        fi
+                    else
+                        echo
+                        print_info "Create it manually:"
+                        echo "  gh repo create $repo_name --public --push"
+                        echo "Or visit: $remote_url"
+                    fi
+                else
+                    print_info "Create it on GitHub:"
+                    echo "  gh repo create $repo_name --public --push"
+                    echo "Or visit: $remote_url"
+                fi
             elif echo "$push_output" | grep -qi "rejected"; then
                 print_warn "Remote has different history (e.g., README from GitHub)."
                 print_info "Options:"
@@ -590,8 +618,10 @@ n0dm_resolve_conflicts() {
 
 #--- Sync Health Check ---------------------------------------------------------
 n0dm_health() {
+    local fix_mode="${1:-}"
     local yadm_git_dir; yadm_git_dir=$(get_yadm_git_dir)
     local issues=0
+    local -A issue_types
     
     echo -e "${BOLD}=== n0dm Health Check ===${RESET}"
     echo
@@ -603,6 +633,7 @@ n0dm_health() {
     else
         print_err "Yadm not initialized"
         issues=$((issues + 1))
+        issue_types[no_yadm]=1
     fi
     
     # Check remote configured
@@ -622,6 +653,7 @@ n0dm_health() {
     else
         print_err "No remote configured"
         issues=$((issues + 1))
+        issue_types[no_remote]=1
     fi
     
     # Check for conflicts
@@ -631,6 +663,7 @@ n0dm_health() {
     else
         print_err "Unresolved merge conflicts detected"
         issues=$((issues + 1))
+        issue_types[conflicts]=1
     fi
     
     # Check backup status
@@ -644,7 +677,7 @@ n0dm_health() {
     
     if [[ $backup_count -eq 0 ]]; then
         print_warn "No backups available"
-        echo "  Run 'n0dm backup' to create first backup"
+        issue_types[no_backups]=1
     else
         print_ok "Backups available"
     fi
@@ -661,10 +694,14 @@ n0dm_health() {
             print_ok "Local and remote are in sync"
         else
             print_warn "Local and remote differ - run 'n0dm sync'"
-            issues=$((issues + 1))
+            issue_types[out_of_sync]=1
         fi
     else
         print_warn "No upstream branch configured"
+        if yadm remote get-url origin &>/dev/null; then
+            issues=$((issues + 1))
+            issue_types[no_upstream]=1
+        fi
     fi
     
     # Check systemd timer if enabled
@@ -675,17 +712,234 @@ n0dm_health() {
             systemctl --user list-timers --no-pager | grep n0dm-sync || true
         else
             print_info "Auto-sync timer is not enabled"
+            issue_types[no_timer]=1
         fi
     fi
     
     echo
-    if [[ $issues -eq 0 ]]; then
+    if [[ $issues -eq 0 && ${#issue_types[@]} -eq 0 ]]; then
         print_ok "Health check passed - no issues found"
+        
+        # Offer to run guided onboarding/setup
+        if [[ "${N0DM_YES:-false}" != "true" ]]; then
+            echo
+            print_notice "Everything looks good! Would you like to set up automation?"
+            read -p "Setup auto-sync and hooks? [y/N] " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                n0dm_guided_setup
+            fi
+        fi
         return 0
-    else
-        print_err "Health check found $issues issue(s)"
-        return 1
     fi
+    
+    print_err "Health check found issues"
+    
+    # If --fix flag, run healing wizard
+    if [[ "$fix_mode" == "--fix" || "$fix_mode" == "-f" ]]; then
+        n0dm_heal "${!issue_types[@]}"
+        return $?
+    fi
+    
+    # Show healing options
+    echo
+    print_notice "I can help fix these issues. Run 'n0dm health --fix' to heal."
+    echo "Available fixes:"
+    [[ -n "${issue_types[no_yadm]:-}" ]] && echo "  (1) Initialize yadm repository"
+    [[ -n "${issue_types[no_remote]:-}" ]] && echo "  (2) Connect to GitHub repository"
+    [[ -n "${issue_types[no_upstream]:-}" ]] && echo "  (3) Push to remote and setup tracking"
+    [[ -n "${issue_types[conflicts]:-}" ]] && echo "  (4) Resolve merge conflicts"
+    [[ -n "${issue_types[no_backups]:-}" ]] && echo "  (5) Create first backup"
+    [[ -n "${issue_types[out_of_sync]:-}" ]] && echo "  (6) Sync with remote"
+    [[ -n "${issue_types[no_timer]:-}" ]] && echo "  (7) Enable auto-sync timer"
+    
+    return 1
+}
+
+#--- Healing Wizard --------------------------------------------------------------
+n0dm_heal() {
+    local issue_list=("$@")
+    local -A issue_actions
+    
+    echo
+    echo -e "${BOLD}=== n0dm Healing Wizard ===${RESET}"
+    echo
+    
+    # Map issues to actions
+    local need_init=false need_connect=false need_push=false
+    local need_conflicts=false need_backup=false need_sync=false need_timer=false
+    
+    for issue in "${issue_list[@]}"; do
+        case "$issue" in
+            no_yadm) need_init=true ;;
+            no_remote) need_connect=true ;;
+            no_upstream) need_push=true ;;
+            conflicts) need_conflicts=true ;;
+            no_backups) need_backup=true ;;
+            out_of_sync) need_sync=true ;;
+            no_timer) need_timer=true ;;
+        esac
+    done
+    
+    # Show menu and let user choose
+    echo "Select what to fix:"
+    local options=()
+    local option_count=0
+    
+    [[ "$need_init" == "true" ]] && { option_count=$((option_count + 1)); options+=("init"); echo "  $option_count) Initialize yadm repository"; }
+    [[ "$need_connect" == "true" ]] && { option_count=$((option_count + 1)); options+=("connect"); echo "  $option_count) Connect to GitHub repository"; }
+    [[ "$need_push" == "true" ]] && { option_count=$((option_count + 1)); options+=("push"); echo "  $option_count) Push to remote and setup tracking"; }
+    [[ "$need_conflicts" == "true" ]] && { option_count=$((option_count + 1)); options+=("conflicts"); echo "  $option_count) Resolve merge conflicts"; }
+    [[ "$need_backup" == "true" ]] && { option_count=$((option_count + 1)); options+=("backup"); echo "  $option_count) Create first backup"; }
+    [[ "$need_sync" == "true" ]] && { option_count=$((option_count + 1)); options+=("sync"); echo "  $option_count) Sync with remote"; }
+    [[ "$need_timer" == "true" ]] && { option_count=$((option_count + 1)); options+=("timer"); echo "  $option_count) Enable auto-sync timer"; }
+    
+    option_count=$((option_count + 1)); options+=("all"); echo "  $option_count) Fix all issues"
+    option_count=$((option_count + 1)); options+=("skip"); echo "  $option_count) Skip"
+    
+    echo
+    read -p "Choose: " -r choice
+    
+    local -a choices
+    if [[ "$choice" =~ ^[0-9]+$ ]]; then
+        local idx=1
+        for opt in "${options[@]}"; do
+            if [[ $idx -eq $choice ]]; then
+                choices=("$opt")
+                break
+            fi
+            idx=$((idx + 1))
+        done
+    elif [[ "$choice" == "all" ]]; then
+        choices=("${options[@]}")
+    fi
+    
+    # Execute chosen fixes
+    for cmd in "${choices[@]}"; do
+        case "$cmd" in
+            init)
+                echo
+                print_info "Running init..."
+                n0dm_init
+                ;;
+            connect)
+                echo
+                print_info "Running connect..."
+                n0dm_connect
+                ;;
+            push)
+                echo
+                print_info "Pushing to remote..."
+                yadm push -u origin main 2>&1 || yadm push -u origin master 2>&1 || print_warn "Push failed"
+                ;;
+            conflicts)
+                echo
+                print_info "Starting conflict resolver..."
+                n0dm_resolve_conflicts || true
+                ;;
+            backup)
+                echo
+                print_info "Creating backup..."
+                create_backup "manual"
+                ;;
+            sync)
+                echo
+                print_info "Syncing..."
+                n0dm_safe_sync "Heal sync" "false" "false" "false"
+                ;;
+            timer)
+                echo
+                print_info "Setting up auto-sync..."
+                n0dm_schedule "daily"
+                ;;
+            skip)
+                print_info "Skipping..."
+                return 0
+                ;;
+        esac
+    done
+    
+    echo
+    print_ok "Healing complete!"
+    print_info "Run 'n0dm health' to verify"
+    return 0
+}
+
+#--- Guided Setup ---------------------------------------------------------------
+n0dm_guided_setup() {
+    echo
+    echo -e "${BOLD}=== n0dm Guided Setup ===${RESET}"
+    echo
+    
+    # Step 1: Track files
+    print_info "Step 1: Track your dotfiles"
+    echo "Files in your home directory that could be tracked:"
+    echo "  - .bashrc, .zshrc (shell config)"
+    echo "  - .config/nvim, .config/kitty (app config)"
+    echo "  - .gitconfig, .tmux.conf"
+    echo
+    read -p "Enter files to track (space-separated), or press Enter to skip: " -r tracked_files
+    if [[ -n "$tracked_files" ]]; then
+        for file in $tracked_files; do
+            n0dm_track "$file" 2>/dev/null || true
+        done
+        print_ok "Files tracked"
+    fi
+    
+    # Step 2: First commit
+    if [[ -n "$tracked_files" ]]; then
+        echo
+        print_info "Step 2: Create first commit"
+        read -p "Enter commit message: " -r commit_msg
+        [[ -z "$commit_msg" ]] && commit_msg="Initial dotfiles"
+        yadm commit -m "$commit_msg" 2>/dev/null && print_ok "Commit created" || print_warn "Nothing to commit"
+    fi
+    
+    # Step 3: Sync to remote
+    if yadm remote get-url origin &>/dev/null; then
+        echo
+        print_info "Step 3: Sync to GitHub"
+        read -p "Push to remote now? [Y/n] " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ || "$REPLY" == "" ]]; then
+            n0dm_safe_sync "Initial sync" "false" "false" "false"
+        fi
+    fi
+    
+    # Step 4: Auto-sync timer
+    echo
+    print_info "Step 4: Set up automation"
+    echo "  (1) Enable hourly auto-sync"
+    echo "  (2) Enable daily auto-sync"
+    echo "  (3) Install pacman hook"
+    echo "  (4) All of the above"
+    echo "  (5) Skip"
+    echo
+    read -p "Choose: " -n 1 -r
+    echo
+    
+    case "$REPLY" in
+        1) n0dm_schedule hourly ;;
+        2) n0dm_schedule daily ;;
+        3) 
+            if command -v sudo &>/dev/null; then
+                sudo -v && n0dm_hook install
+            else
+                print_warn "sudo not available, skipping hook install"
+            fi
+            ;;
+        4)
+            n0dm_schedule daily
+            if command -v sudo &>/dev/null; then
+                sudo -v && n0dm_hook install
+            fi
+            ;;
+        *) print_info "Skipped" ;;
+    esac
+    
+    echo
+    print_ok "Guided setup complete!"
+    print_info "Run 'n0dm status' to see your dotfiles status"
 }
 
 #--- Connect to Remote ---------------------------------------------------------
@@ -1423,7 +1677,7 @@ ${BOLD}Enhanced Commands (N0DM specific):${RESET}
   backups                   List available n0dm backups
   cleanup                   Remove old backups per retention policy
   conflicts [--fix]           Check for unresolved merge conflicts
-  health                    Run health check (also: doctor)
+  health [--fix]             Run health check with healing options (also: doctor)
   status                    Show yadm status + n0dm backup info
   update                    Check for and install n0dm updates
   mergetool                 Launch configured merge tool for conflicts
@@ -1480,6 +1734,8 @@ ${BOLD}Examples:${RESET}
   n0dm list                              # List tracked files
   n0dm status                            # Enhanced status
   n0dm health                            # Run health check
+  n0dm health --fix                      # Run health check with healing wizard
+  n0dm doctor                            # Alias for health
   n0dm sync --safe --yes                 # Safe auto-sync with notifications
   n0dm update                            # Self-update n0dm
   n0dm yadm-restore .bashrc              # Access native yadm restore
@@ -1560,7 +1816,7 @@ main() {
             n0dm_check_conflicts
             ;;
         health|doctor)
-            n0dm_health
+            n0dm_health "$@"
             ;;
         status)
             n0dm_status "$@"
