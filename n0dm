@@ -387,14 +387,6 @@ n0dm_safe_sync() {
         return 1
     fi
 
-    # Stage all changes in home directory
-    # Using 'yadm add .' (not -A) to properly respect .gitignore
-    # Git detects renames at commit-time, not add-time
-    if [[ "$dry_run" != "true" ]]; then
-        print_info "Staging changes..."
-        (cd "$HOME" && yadm add .) 2>/dev/null || true
-    fi
-
     # Smart backup: only create if tracked files changed AND backup not disabled
     if [[ "$no_backup" != "true" && "$dry_run" != "true" ]]; then
         if needs_smart_backup; then
@@ -413,22 +405,14 @@ n0dm_safe_sync() {
         return 0
     fi
 
-    # Commit local changes first (if any)
-    # Check for staged changes (like removals from untrack)
-    local staged_changes
-    staged_changes=$(yadm diff --cached --name-only 2>/dev/null)
-    if [[ -n "$staged_changes" ]]; then
-        print_info "Committing staged changes..."
-        yadm commit -m "$message" || print_warn "Nothing to commit"
+    # Commit local changes (only tracked files, respects .gitignore)
+    # Using -a flag to stage and commit tracked files in one step
+    # New files must be added explicitly with 'n0dm track'
+    print_info "Committing changes..."
+    if yadm commit -am "$message" 2>/dev/null; then
+        print_ok "Changes committed"
     else
-        # Check for unstaged changes
-        local unstaged_changes
-        unstaged_changes=$(yadm status --porcelain 2>/dev/null | grep -v "^D " || true)
-        if [[ -n "$unstaged_changes" ]]; then
-            print_info "Committing local changes..."
-            yadm add -u
-            yadm commit -m "$message" || print_warn "Nothing to commit"
-        fi
+        print_warn "Nothing to commit"
     fi
 
     # Check if we have any commits
