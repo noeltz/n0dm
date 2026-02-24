@@ -88,7 +88,7 @@ bash -n n0dm                          # Syntax check
 #    Line 10: readonly N0DM_VERSION="1.4.2"
 
 # 6. Commit with descriptive message
-git add n0dm readme.md
+git add n0dm readme.md AGENTS.md
 git commit -m "fix: add proper clone handler with force flag support
 
 - Add n0dm_clone function to handle clone as enhanced command
@@ -113,7 +113,59 @@ git push
 - [ ] **Update `readme.md` with all new features/commands** (REQUIRED for every change)
 - [ ] Update version badge in `readme.md` (only for major/minor releases)
 - [ ] Push to remote with `git push`
+- [ ] **Generate SHA256 checksum file** (required for `n0dm update` to work)
 - [ ] Verify self-update works: `n0dm update` on another machine
+
+### ⚠️ CRITICAL: Generate SHA256 Checksum After Push
+
+The `n0dm update` command requires a checksum file for verification. **After every version bump**, you MUST:
+
+```bash
+# After pushing code changes, generate the checksum file
+cd ~/dev/n0dm
+sha256sum n0dm > n0dm.sha256
+git add n0dm.sha256
+git commit -m "chore: add sha256 checksum file for version X.X.X"
+git push
+```
+
+**Why this is required:**
+- The `n0dm update` command downloads `n0dm.sha256` from GitHub to verify the update
+- Without this file, users get: `⚠ Could not download checksum file (verification skipped)`
+- The update will still work, but without cryptographic verification
+
+**Complete release sequence (copy-paste ready):**
+```bash
+# 1. Update version in n0dm script (edit lines 4 and 10)
+# 2. Stage and commit changes
+git add n0dm readme.md AGENTS.md
+git commit -m "fix: description of changes
+
+Bump version to 2.0.4"
+
+# 3. Push code
+git push
+
+# 4. Generate and push checksum (WAIT a few seconds for GitHub to process)
+sha256sum n0dm > n0dm.sha256
+git add n0dm.sha256
+git commit -m "chore: add sha256 checksum for version 2.0.4"
+git push
+
+# 5. Verify (wait ~30 seconds for GitHub CDN to update)
+sleep 30
+curl -fsSL https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm.sha256
+
+# 6. Test self-update
+n0dm update  # Should show: "New version available: 2.0.4"
+```
+
+**Troubleshooting:**
+| Issue | Solution |
+|-------|----------|
+| `404 Not Found` on checksum | Wait 30-60 seconds after push for GitHub CDN to update |
+| Checksum mismatch | Re-run `sha256sum n0dm > n0dm.sha256` and push again |
+| Update fails silently | Check `n0dm version` before/after, verify internet connectivity |
 
 ### Documentation Requirements
 
