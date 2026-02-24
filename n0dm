@@ -420,28 +420,23 @@ n0dm_safe_sync() {
     if [[ -n "$has_upstream" ]]; then
         print_info "Pulling remote changes..."
         if ! yadm pull --ff-only 2>/dev/null; then
-            print_warn "Fast-forward pull failed. Checking for conflicts..."
-            if yadm merge --no-commit --no-ff origin/$(yadm branch --show-current) 2>&1 | grep -q "CONFLICT"; then
-                print_err "Merge conflicts detected!"
-                
-                # In safe/yes mode, abort and notify
-                if [[ "$safe_mode" == "true" || "$yes_mode" == "true" ]]; then
+            print_warn "Fast-forward pull failed, attempting regular merge..."
+            # Try a regular pull that can create merge commits
+            local pull_output
+            if ! pull_output=$(yadm pull 2>&1); then
+                # Check if it's a conflict (unmerged files)
+                if git --git-dir="$yadm_git_dir" diff --name-only --diff-filter=U 2>/dev/null | grep -q .; then
+                    print_err "Merge conflicts detected!"
                     print_info "Resolve with: n0dm conflicts --fix"
-                    yadm merge --abort 2>/dev/null || true
-                    send_notification "n0dm Conflict Detected" "Merge conflicts need resolution" "critical"
+                    print_info "Or use: n0dm mergetool for visual resolution"
+                    if [[ "$safe_mode" == "true" || "$yes_mode" == "true" ]]; then
+                        send_notification "n0dm Conflict Detected" "Merge conflicts need resolution" "critical"
+                    fi
                     return 1
                 fi
-                
-                # Otherwise, launch interactive resolver
-                print_info "Starting interactive conflict resolver..."
-                echo
-                if n0dm_resolve_conflicts; then
-                    print_ok "Conflicts resolved, proceeding with sync..."
-                else
-                    print_warn "Conflict resolution not complete"
-                    print_info "Run 'n0dm conflicts --fix' to resolve remaining conflicts"
-                    return 1
-                fi
+                # If pull failed but no conflicts, something else went wrong
+                print_err "Pull failed: $pull_output"
+                return 1
             fi
         fi
     fi
@@ -508,8 +503,17 @@ n0dm_safe_sync() {
             return 1
         fi
     else
-        if ! yadm push 2>&1; then
+        local push_status=0
+        local push_output
+        if ! push_output=$(yadm push 2>&1); then
+            push_status=$?
+        fi
+        if [[ $push_status -ne 0 ]]; then
             print_err "Push failed. Your changes are committed locally."
+            echo "$push_output"
+            print_info "If remote has different history, try:"
+            echo "  1. n0dm pull --rebase && n0dm sync"
+            echo "  2. n0dm sync --force (overwrites remote)"
             if [[ "$safe_mode" == "true" || "$yes_mode" == "true" ]]; then
                 send_notification "n0dm Sync Failed" "Push rejected - check manually" "critical"
             fi
