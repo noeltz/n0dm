@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #===============================================================================
 # N0DM - Enhanced Yadm Wrapper for Arch Linux
-# Version: 2.0.6
+# Version: 2.0.7
 # Combines Yadm's reliability with smart backups and safety features
 #===============================================================================
 set -euo pipefail
 
 #--- Configuration -------------------------------------------------------------
-readonly N0DM_VERSION="2.0.6"
+readonly N0DM_VERSION="2.0.7"
 readonly N0DM_UPDATE_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm"
 readonly N0DM_CHECKSUM_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm.sha256"
 readonly N0DM_DATA_DIR="${HOME}/.local/share/n0dm"
@@ -484,21 +484,71 @@ n0dm_safe_sync() {
                         # Check if failed due to untracked files
                         if echo "$rebase_output" | grep -qi "untracked working tree files"; then
                             print_warn "Rebase failed: untracked files would be overwritten"
-                            echo "$rebase_output" | grep "^[[:space:]]*.bashrc\|^[[:space:]]*\.config" | head -5 | while read -r f; do
+                            echo "$rebase_output" | grep -E "^[[:space:]]*\." | head -10 | while read -r f; do
                                 print_info "  $f"
                             done
                             echo
-                            read -p "Try merge instead? [Y/n] " -n 1 -r
+                            echo "Options:"
+                            echo "  (M)erge remote into local"
+                            echo "  (B)ackup untracked files, pull, then restore from backup"
+                            echo "  (Q)uit"
                             echo
-                            if [[ $REPLY =~ ^[Yy]$ || "$REPLY" == "" ]]; then
-                                print_info "Merging remote into local..."
-                                if ! yadm pull --no-rebase 2>&1; then
-                                    print_err "Merge failed"
-                                    return 1
-                                fi
-                            else
-                                return 1
-                            fi
+                            local sub_choice=""
+                            while [[ ! "$sub_choice" =~ ^[MmBbQq]$ ]]; do
+                                echo -n "Choose: "
+                                read -n 1 -r sub_choice
+                                echo
+                                [[ -z "$sub_choice" ]] && sub_choice="Q"
+                            done
+                            
+                            case "$sub_choice" in
+                                M|m)
+                                    print_info "Merging remote into local..."
+                                    if ! yadm pull --no-rebase 2>&1; then
+                                        print_err "Merge failed"
+                                        return 1
+                                    fi
+                                    ;;
+                                B|b)
+                                    # Extract list of untracked files to backup
+                                    local untracked_files=()
+                                    while IFS= read -r f; do
+                                        [[ -z "$f" ]] && continue
+                                        f=$(echo "$f" | xargs)  # trim whitespace
+                                        [[ -n "$f" ]] && untracked_files+=("$f")
+                                    done < <(echo "$rebase_output" | grep -E "^[[:space:]]*\." | head -20)
+                                    
+                                    if [[ ${#untracked_files[@]} -gt 0 ]]; then
+                                        print_info "Creating backup of untracked files..."
+                                        local backup_label="pre-sync-untracked-$(timestamp)"
+                                        local backup_dir; backup_dir=$(create_backup "$backup_label" 2>/dev/null || echo "")
+                                        
+                                        # Remove untracked files so rebase can proceed
+                                        print_info "Removing untracked files to allow rebase..."
+                                        for f in "${untracked_files[@]}"; do
+                                            [[ -f "$HOME/$f" ]] && rm -f "$HOME/$f" 2>/dev/null
+                                        done
+                                        
+                                        print_info "Retrying rebase..."
+                                        if ! yadm pull --rebase 2>&1; then
+                                            print_err "Rebase failed even after removing files"
+                                            print_info "Restoring backup manually with: n0dm restore $backup_label"
+                                            return 1
+                                        fi
+                                        
+                                        print_ok "Rebase succeeded!"
+                                        print_info "Untracked files backed up to: $backup_label"
+                                        print_info "To restore: n0dm restore $backup_label"
+                                    else
+                                        print_err "Could not identify untracked files to backup"
+                                        return 1
+                                    fi
+                                    ;;
+                                Q|q)
+                                    print_info "Sync cancelled"
+                                    return 0
+                                    ;;
+                            esac
                         else
                             print_err "Rebase failed: $rebase_output"
                             return 1
