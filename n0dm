@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #===============================================================================
 # N0DM - Enhanced Yadm Wrapper for Arch Linux
-# Version: 2.0.9
+# Version: 2.1.0
 # Combines Yadm's reliability with smart backups and safety features
 #===============================================================================
 set -euo pipefail
 
 #--- Configuration -------------------------------------------------------------
-readonly N0DM_VERSION="2.0.9"
+readonly N0DM_VERSION="2.1.0"
 readonly N0DM_UPDATE_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm"
 readonly N0DM_CHECKSUM_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm.sha256"
 readonly N0DM_DATA_DIR="${HOME}/.local/share/n0dm"
@@ -780,6 +780,25 @@ n0dm_check_conflicts() {
 n0dm_resolve_conflicts() {
     local yadm_git_dir; yadm_git_dir=$(get_yadm_git_dir)
     
+    # Check if we're in the middle of a rebase
+    local rebase_in_progress=false
+    if [[ -d "$yadm_git_dir/rebase-merge" ]] || [[ -d "$yadm_git_dir/.git/rebase-merge" ]]; then
+        rebase_in_progress=true
+    elif git --git-dir="$yadm_git_dir" status 2>/dev/null | grep -q "rebase in progress"; then
+        rebase_in_progress=true
+    fi
+    
+    # If rebase in progress, abort it first to get clean state
+    if [[ "$rebase_in_progress" == "true" ]]; then
+        print_warn "Rebase in progress - aborting to resolve conflicts..."
+        if ! git --git-dir="$yadm_git_dir" rebase --abort 2>/dev/null; then
+            print_err "Failed to abort rebase"
+            print_info "Try running manually: yadm rebase --abort"
+            return 1
+        fi
+        print_ok "Rebase aborted"
+    fi
+    
     # Check for conflicts
     local conflicts
     conflicts=$(git --git-dir="$yadm_git_dir" diff --name-only --diff-filter=U 2>/dev/null)
@@ -802,12 +821,13 @@ n0dm_resolve_conflicts() {
         
         echo -e "${RED}=== Conflict #$conflict_count: $file ===${RESET}"
         
-        # Show diff
-        echo -e "${YELLOW}--- Local changes (yours) ---${RESET}"
-        git --git-dir="$yadm_git_dir" show ":1:$file" 2>/dev/null | head -20 || echo "(empty)"
-        echo
-        echo -e "${CYAN}--- Remote changes (GitHub) ---${RESET}"
+        # Show diff - use :2 for ours, :3 for theirs during merge
+        # During rebase: :2 = ours (patch), :3 = theirs (HEAD)
+        echo -e "${YELLOW}--- Local/Our version ---${RESET}"
         git --git-dir="$yadm_git_dir" show ":2:$file" 2>/dev/null | head -20 || echo "(empty)"
+        echo
+        echo -e "${CYAN}--- Remote/Their version ---${RESET}"
+        git --git-dir="$yadm_git_dir" show ":3:$file" 2>/dev/null | head -20 || echo "(empty)"
         echo
         
         # Prompt user
@@ -821,13 +841,13 @@ n0dm_resolve_conflicts() {
         
         case "$choice" in
             L|l)
-                git --git-dir="$yadm_git_dir" show ":1:$file" > "$full_path" 2>/dev/null || true
+                git --git-dir="$yadm_git_dir" show ":2:$file" > "$full_path" 2>/dev/null || true
                 yadm add "$file" 2>/dev/null || true
                 print_ok "Kept local version"
                 resolved_count=$((resolved_count + 1))
                 ;;
             R|r)
-                git --git-dir="$yadm_git_dir" show ":2:$file" > "$full_path" 2>/dev/null || true
+                git --git-dir="$yadm_git_dir" show ":3:$file" > "$full_path" 2>/dev/null || true
                 yadm add "$file" 2>/dev/null || true
                 print_ok "Kept remote version"
                 resolved_count=$((resolved_count + 1))
