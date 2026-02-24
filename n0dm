@@ -9,6 +9,7 @@ set -euo pipefail
 #--- Configuration -------------------------------------------------------------
 readonly N0DM_VERSION="2.0.1"
 readonly N0DM_UPDATE_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm"
+readonly N0DM_CHECKSUM_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm.sha256"
 readonly N0DM_DATA_DIR="${HOME}/.local/share/n0dm"
 readonly N0DM_BACKUP_DIR="${N0DM_DATA_DIR}/backups"
 readonly N0DM_CONFIG="${N0DM_DATA_DIR}/config"
@@ -95,23 +96,47 @@ get_yadm_git_dir() {
 }
 
 #--- State Management for Smart Backups ----------------------------------------
-get_last_backup_epoch() {
+# Read a value from the state file (robust key=value parsing)
+# Usage: state_get "key" "default_value"
+state_get() {
+    local key="$1"
+    local default="${2:-}"
     if [[ -f "$N0DM_STATE_FILE" ]]; then
-        grep "^last_backup_epoch=" "$N0DM_STATE_FILE" 2>/dev/null | cut -d= -f2 || echo "0"
-    else
-        echo "0"
+        local value
+        value=$(grep "^${key}=" "$N0DM_STATE_FILE" 2>/dev/null | cut -d= -f2-)
+        if [[ -n "$value" ]]; then
+            echo "$value"
+            return 0
+        fi
     fi
+    echo "$default"
+}
+
+# Write a value to the state file (updates or adds)
+# Usage: state_set "key" "value"
+state_set() {
+    local key="$1"
+    local value="$2"
+    mkdir -p "$(dirname "$N0DM_STATE_FILE")"
+    
+    if grep -q "^${key}=" "$N0DM_STATE_FILE" 2>/dev/null; then
+        # Update existing key (use temp file for BSD compatibility)
+        local tmp_file; tmp_file=$(mktemp)
+        sed "s|^${key}=.*|${key}=${value}|" "$N0DM_STATE_FILE" > "$tmp_file"
+        mv "$tmp_file" "$N0DM_STATE_FILE"
+    else
+        # Add new key
+        echo "${key}=${value}" >> "$N0DM_STATE_FILE"
+    fi
+}
+
+get_last_backup_epoch() {
+    state_get "last_backup_epoch" "0"
 }
 
 set_last_backup_epoch() {
     local epoch="$1"
-    mkdir -p "$(dirname "$N0DM_STATE_FILE")"
-    # Update or add the value
-    if grep -q "^last_backup_epoch=" "$N0DM_STATE_FILE" 2>/dev/null; then
-        sed -i "s/^last_backup_epoch=.*/last_backup_epoch=${epoch}/" "$N0DM_STATE_FILE"
-    else
-        echo "last_backup_epoch=${epoch}" >> "$N0DM_STATE_FILE"
-    fi
+    state_set "last_backup_epoch" "$epoch"
 }
 
 #--- Smart Backup Detection ----------------------------------------------------
@@ -261,7 +286,8 @@ cleanup_backups() {
     local count=0 removed=0
 
     # Sort by name (timestamp) descending, keep newest MAX_BACKUPS
-    find "$N0DM_BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -r | while read -r backup; do
+    # Use process substitution to avoid subshell (variables persist)
+    while read -r backup; do
         count=$((count + 1))
         local backup_path="${N0DM_BACKUP_DIR}/${backup}"
         local backup_time; backup_time=$(stat -c %Y "$backup_path" 2>/dev/null || echo 0)
@@ -273,7 +299,7 @@ cleanup_backups() {
             print_info "Removed old backup: $backup"
             removed=$((removed + 1))
         fi
-    done
+    done < <(find "$N0DM_BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -r)
 
     if [[ $removed -gt 0 ]]; then
         print_ok "Cleanup: removed $removed backup(s)"
@@ -1430,41 +1456,69 @@ EOF
 #--- Atomic Self-Update --------------------------------------------------------
 self_update() {
     print_info "Checking for updates..."
-    
+
     # Resolve actual path (handle symlinks)
     local actual_path; actual_path=$(realpath "$0" 2>/dev/null || echo "$0")
     local script_dir; script_dir=$(dirname "$actual_path")
     local temp_file; temp_file=$(mktemp -p "$script_dir" .n0dm-update.XXXXXX)
-    
+    local temp_checksum; temp_checksum=$(mktemp -p "$script_dir" .n0dm-checksum.XXXXXX)
+
+    # Download the update
     if ! curl -fsSL "$N0DM_UPDATE_URL" -o "$temp_file" 2>/dev/null; then
-        rm -f "$temp_file"
+        rm -f "$temp_file" "$temp_checksum"
         print_err "Failed to download update"
         print_info "Make sure you have internet connectivity"
         return 1
     fi
-    
+
+    # Download and verify checksum (best effort - don't fail if unavailable)
+    local checksum_verified=false
+    if curl -fsSL "$N0DM_CHECKSUM_URL" -o "$temp_checksum" 2>/dev/null; then
+        local expected_checksum; expected_checksum=$(awk '{print $1}' "$temp_checksum" 2>/dev/null)
+        if [[ -n "$expected_checksum" ]]; then
+            local actual_checksum; actual_checksum=$(sha256sum "$temp_file" 2>/dev/null | awk '{print $1}')
+            if [[ "$expected_checksum" == "$actual_checksum" ]]; then
+                checksum_verified=true
+            else
+                rm -f "$temp_file" "$temp_checksum"
+                print_err "Checksum verification failed!"
+                print_warn "The downloaded file may be corrupted or tampered with"
+                print_info "Expected: $expected_checksum"
+                print_info "Got:      $actual_checksum"
+                return 1
+            fi
+        fi
+        rm -f "$temp_checksum"
+    else
+        print_warn "Could not download checksum file (verification skipped)"
+        rm -f "$temp_checksum"
+    fi
+
     local current_version; current_version=$(grep "^readonly N0DM_VERSION=" "$actual_path" 2>/dev/null | head -1 | cut -d'"' -f2)
     local new_version; new_version=$(grep "^readonly N0DM_VERSION=" "$temp_file" 2>/dev/null | head -1 | cut -d'"' -f2)
-    
+
     [[ -z "$current_version" ]] && current_version="unknown"
     [[ -z "$new_version" ]] && { print_err "Failed to determine remote version"; rm -f "$temp_file"; return 1; }
-    
+
     if [[ "$new_version" != "$current_version" ]]; then
         print_info "New version available: $new_version (current: $current_version)"
+        if [[ "$checksum_verified" == "true" ]]; then
+            print_info "Checksum verified ✓"
+        fi
         if [[ "${N0DM_YES:-false}" == "true" ]]; then
             auto_confirm="y"
         else
             read -p "Install update? [y/N] " -n 1 -r auto_confirm
             echo
         fi
-        
+
         if [[ $auto_confirm =~ ^[Yy]$ ]]; then
             chmod +x "$temp_file"
-            
+
             # Backup current version before replacing
             local backup_file="${actual_path}.backup.$(date +%s)"
             cp "$actual_path" "$backup_file"
-            
+
             if cp "$temp_file" "$actual_path" 2>/dev/null; then
                 rm -f "$temp_file"
                 rm -f "$backup_file"
@@ -1558,22 +1612,22 @@ n0dm_untrack() {
 
     if [[ ${#tracked_files[@]} -gt 0 ]]; then
         print_info "Removing from tracking (keeping files in place)..."
-        
+
         # Check if any files are directories (need -r flag)
-        local dirs=() files=()
+        local dirs=() regular_files=()
         for f in "${tracked_files[@]}"; do
             if [[ -d "$HOME/$f" ]]; then
                 dirs+=("$f")
             else
-                files+=("$f")
+                regular_files+=("$f")
             fi
         done
-        
+
         # Remove files first
-        if [[ ${#files[@]} -gt 0 ]]; then
-            (cd "$HOME" && yadm rm --cached "${files[@]}")
+        if [[ ${#regular_files[@]} -gt 0 ]]; then
+            (cd "$HOME" && yadm rm --cached "${regular_files[@]}")
         fi
-        
+
         # Remove directories with -r flag
         if [[ ${#dirs[@]} -gt 0 ]]; then
             (cd "$HOME" && yadm rm -r --cached "${dirs[@]}")
