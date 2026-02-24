@@ -472,6 +472,172 @@ When in doubt, ask: *"Would a non-technical user understand this?"*
 
 ---
 
+## 📚 Lessons Learned
+
+### Directory Tracking & .gitignore Whitelist Pattern (2026-02-24)
+
+#### ⚠️ The Problem
+
+When users ran `n0dm track ~/.config/testarea` expecting to track a directory recursively, only the directory entry was staged—not the files inside. This happened because:
+
+1. **Whitelist-based `.gitignore`**: The default `.gitignore` uses `/*` (ignore all) + `!pattern` (un-ignore specific)
+2. **Directory vs. contents**: `.config/` was un-ignored, but `.config/testarea/*` contents remained ignored
+3. **Git behavior**: Git cannot track empty directories—only files within them
+
+```bash
+# BEFORE FIX - User experience was confusing:
+$ n0dm track ~/.config/testarea
+➜ Tracking 1 file(s)...
+✓ Added to tracking: .config/testarea
+➜ Run 'n0dm sync' to commit and push
+
+$ n0dm sync
+⚠ Nothing to commit  # Files inside weren't tracked!
+```
+
+#### ✅ The Solution
+
+**Auto-manage `.gitignore` when tracking directories:**
+
+1. **Detect directories** in `n0dm_track()`
+2. **Append un-ignore patterns** for each directory:
+   ```bash
+   !.config/testarea/
+   !.config/testarea/*
+   ```
+3. **Stage `.gitignore` automatically** along with the tracked files
+4. **Provide clear feedback** about what was added
+
+```bash
+# AFTER FIX - User experience is intuitive:
+$ n0dm track ~/.config/testarea
+➜ Added '.config/testarea' to .gitignore whitelist
+➜ Tracking 3 file(s)...
+✓ Added to tracking: .config/testarea
+➜ .gitignore updated and staged
+➜ Run 'n0dm sync' to commit and push
+```
+
+#### 🔧 Implementation Details
+
+**Key code changes in `n0dm_track()`:**
+
+```bash
+# 1. Separate directories from files
+local dirs=()
+local root_files=()
+for file in "$@"; do
+    local rel_path="${file#$HOME/}"
+    if [[ -d "$file" ]]; then
+        dirs+=("$rel_path")
+    elif [[ "$rel_path" != */* ]]; then
+        root_files+=("$rel_path")  # Root-level files need un-ignore too
+    fi
+done
+
+# 2. Auto-update .gitignore for directories
+if [[ -f "$HOME/.gitignore" ]]; then
+    for dir in "${dirs[@]}"; do
+        if ! grep -q "^!${dir}" "$HOME/.gitignore" 2>/dev/null; then
+            echo "!${dir}/" >> "$HOME/.gitignore"
+            echo "!${dir}/*" >> "$HOME/.gitignore"
+            print_info "Added '$dir' to .gitignore whitelist"
+        fi
+    done
+fi
+
+# 3. Stage .gitignore if modified
+if [[ "$gitignore_updated" == "true" ]]; then
+    (cd "$HOME" && yadm add .gitignore)
+fi
+```
+
+**Also fixed commit logic in `n0dm_safe_sync()`:**
+
+```bash
+# Check for staged changes first (from n0dm track), then modified files
+if git --git-dir="$yadm_git_dir" diff --cached --quiet 2>/dev/null; then
+    # No staged changes - use -a for modified tracked files
+    yadm commit -am "$message"
+else
+    # Has staged changes - commit without -a
+    yadm commit -m "$message"
+fi
+```
+
+#### 🧪 Comprehensive Testing Results
+
+All 13 test scenarios validated:
+
+| Test | Result | Key Insight |
+|------|--------|-------------|
+| Add new file to tracked dir | ✅ | Requires explicit `n0dm track` (standard git) |
+| Modify existing file | ✅ | Smart backup triggered correctly |
+| Rename tracked file | ✅ | Track new name, deletion auto-detected |
+| Rename subfolder | ✅ | `.gitignore` auto-updated for new path |
+| Delete tracked file | ✅ | Deletion detected and committed |
+| Untrack single file | ✅ | File kept in home, removed from tracking |
+| Conflict detection | ✅ | `n0dm conflicts` works correctly |
+| Track multiple items | ✅ | Batch directory tracking works |
+| Nested subdirectories | ✅ | Deep nesting (level1/level2/level3) works |
+| Untrack directory | ✅ | Recursive untrack, files preserved |
+| Backup and restore | ✅ | Manual backup + retention policy |
+| Dry-run mode | ✅ | Shows changes without committing |
+
+#### 📋 Key Takeaways for Future Development
+
+1. **Git's directory tracking model**: Git only tracks files, not directories. Empty directories won't appear in commits.
+
+2. **Whitelist .gitignore implications**: When using `/*` + `!pattern`:
+   - Un-ignoring a directory (`!.config/`) doesn't un-ignore its contents
+   - Must explicitly un-ignore: `!.config/dir/` AND `!.config/dir/*`
+
+3. **User expectations matter**: Users expect `track <directory>` to work recursively. Auto-managing `.gitignore` meets this expectation.
+
+4. **Staged vs. modified changes**: Git distinguishes between:
+   - **Staged** (via `git add` / `yadm add`) - new files
+   - **Modified** (tracked files changed) - use `commit -a`
+   - Commit logic must handle both cases
+
+5. **Test comprehensively**: The 13-test suite covers:
+   - CRUD operations (create, read, update, delete)
+   - Structural changes (rename, move)
+   - Tracking management (track, untrack)
+   - Safety features (backup, restore, dry-run)
+   - Edge cases (nested dirs, multiple items)
+
+6. **Feedback is critical**: Clear messages like "Added 'X' to .gitignore whitelist" help users understand what's happening.
+
+#### 🚫 Common Pitfalls to Avoid
+
+```bash
+# DON'T: Assume yadm add handles directories automatically with whitelist .gitignore
+(cd "$HOME" && yadm add "$rel_path")  # Won't work without .gitignore update
+
+# DO: Update .gitignore first, then add
+echo "!${dir}/" >> "$HOME/.gitignore"
+echo "!${dir}/*" >> "$HOME/.gitignore"
+(cd "$HOME" && yadm add .gitignore "$rel_path")
+
+# DON'T: Use commit -am for newly staged files
+yadm commit -am "message"  # Won't commit newly added files
+
+# DO: Check for staged changes first
+if git diff --cached --quiet; then
+    yadm commit -am "message"  # Modified files
+else
+    yadm commit -m "message"   # New/staged files
+fi
+```
+
+#### 📖 Related Documentation
+
+- **README.md**: Update "Managing What Gets Tracked" section with directory tracking behavior
+- **Help output**: `n0dm track --help` should mention automatic `.gitignore` management
+- **Error messages**: Guide users when tracking fails due to .gitignore patterns
+
+---
+
 <p align="center">
   <sub>Maintained with ☕ by noeltz</sub>
 </p>
