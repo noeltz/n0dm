@@ -685,13 +685,29 @@ n0dm_health() {
         local remote_url
         remote_url=$(yadm remote get-url origin)
         print_ok "Remote configured: $remote_url"
-        
+
         # Check if can reach remote
         print_info "Checking remote connectivity..."
-        if git ls-remote --exit-code origin &>/dev/null; then
+        local ls_output
+        if ls_output=$(git ls-remote --exit-code origin 2>&1); then
             print_ok "Remote is reachable"
         else
-            print_warn "Remote may not be reachable"
+            # Check if it's an auth issue
+            if echo "$ls_output" | grep -qiE "authentication|not found|could not read|denied"; then
+                print_err "Authentication failed"
+                issues=$((issues + 1))
+                issue_types[auth_failed]=1
+                
+                # Check gh auth status
+                if command -v gh &>/dev/null; then
+                    if ! gh auth status &>/dev/null; then
+                        print_info "GitHub CLI is not authenticated"
+                        print_info "Run: gh auth login"
+                    fi
+                fi
+            else
+                print_warn "Remote may not be reachable"
+            fi
         fi
     else
         print_err "No remote configured"
@@ -795,7 +811,8 @@ n0dm_heal() {
     # Map issues to actions
     local need_init=false need_connect=false need_push=false
     local need_conflicts=false need_backup=false need_sync=false need_timer=false
-    
+    local need_auth=false
+
     for issue in "${issue_list[@]}"; do
         case "$issue" in
             no_yadm) need_init=true ;;
@@ -805,14 +822,15 @@ n0dm_heal() {
             no_backups) need_backup=true ;;
             out_of_sync) need_sync=true ;;
             no_timer) need_timer=true ;;
+            auth_failed) need_auth=true ;;
         esac
     done
-    
+
     # Show menu and let user choose
     echo "Select what to fix:"
     local options=()
     local option_count=0
-    
+
     [[ "$need_init" == "true" ]] && { option_count=$((option_count + 1)); options+=("init"); echo "  $option_count) Initialize yadm repository"; }
     [[ "$need_connect" == "true" ]] && { option_count=$((option_count + 1)); options+=("connect"); echo "  $option_count) Connect to GitHub repository"; }
     [[ "$need_push" == "true" ]] && { option_count=$((option_count + 1)); options+=("push"); echo "  $option_count) Push to remote and setup tracking"; }
@@ -820,6 +838,7 @@ n0dm_heal() {
     [[ "$need_backup" == "true" ]] && { option_count=$((option_count + 1)); options+=("backup"); echo "  $option_count) Create first backup"; }
     [[ "$need_sync" == "true" ]] && { option_count=$((option_count + 1)); options+=("sync"); echo "  $option_count) Sync with remote"; }
     [[ "$need_timer" == "true" ]] && { option_count=$((option_count + 1)); options+=("timer"); echo "  $option_count) Enable auto-sync timer"; }
+    [[ "$need_auth" == "true" ]] && { option_count=$((option_count + 1)); options+=("auth"); echo "  $option_count) Re-authenticate with GitHub"; }
     
     option_count=$((option_count + 1)); options+=("all"); echo "  $option_count) Fix all issues"
     option_count=$((option_count + 1)); options+=("skip"); echo "  $option_count) Skip"
@@ -878,6 +897,21 @@ n0dm_heal() {
                 echo
                 print_info "Setting up auto-sync..."
                 n0dm_schedule "daily"
+                ;;
+            auth)
+                echo
+                print_info "Authenticating with GitHub..."
+                if command -v gh &>/dev/null; then
+                    if gh auth login -h github.com -p https 2>&1; then
+                        print_ok "GitHub authentication successful"
+                    else
+                        print_err "Authentication failed"
+                        print_info "Try: gh auth login"
+                    fi
+                else
+                    print_err "GitHub CLI (gh) not installed"
+                    print_info "Install: sudo pacman -S github-cli"
+                fi
                 ;;
             skip)
                 print_info "Skipping..."
