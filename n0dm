@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 #===============================================================================
 # N0DM - Enhanced Yadm Wrapper for Arch Linux
-# Version: 1.8.1
+# Version: 2.0.0
 # Combines Yadm's reliability with smart backups and safety features
 #===============================================================================
 set -euo pipefail
 
 #--- Configuration -------------------------------------------------------------
-readonly N0DM_VERSION="1.8.1"
+readonly N0DM_VERSION="2.0.0"
 readonly N0DM_UPDATE_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm"
 readonly N0DM_DATA_DIR="${HOME}/.local/share/n0dm"
 readonly N0DM_BACKUP_DIR="${N0DM_DATA_DIR}/backups"
 readonly N0DM_CONFIG="${N0DM_DATA_DIR}/config"
 readonly N0DM_STATE_FILE="${N0DM_DATA_DIR}/state"
-readonly MAX_BACKUPS="${N0DM_MAX_BACKUPS:-10}"
-readonly BACKUP_RETENTION_DAYS="${N0DM_BACKUP_RETENTION:-30}"
+MAX_BACKUPS="${N0DM_MAX_BACKUPS:-10}"
+BACKUP_RETENTION_DAYS="${N0DM_BACKUP_RETENTION:-30}"
 
 #--- Colors & Output -----------------------------------------------------------
 readonly RESET='\033[0m' BOLD='\033[1m' RED='\033[31m' GREEN='\033[32m'
@@ -44,15 +44,20 @@ ensure_dirs() {
 
 load_config() {
     if [[ -f "$N0DM_CONFIG" ]]; then
-        source "$N0DM_CONFIG"
+        while IFS='=' read -r key value; do
+            case "$key" in
+                N0DM_MAX_BACKUPS)     MAX_BACKUPS=${value:-10} ;;
+                N0DM_BACKUP_RETENTION) BACKUP_RETENTION_DAYS=${value:-30} ;;
+            esac
+        done < "$N0DM_CONFIG"
     fi
 }
 
 save_config() {
     cat > "$N0DM_CONFIG" <<EOF
-# N0DM config (auto-generated)
-MAX_BACKUPS=${MAX_BACKUPS}
-BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS}
+# N0DM config (auto-generated - safe parsing, no code execution)
+N0DM_MAX_BACKUPS=${MAX_BACKUPS}
+N0DM_BACKUP_RETENTION=${BACKUP_RETENTION_DAYS}
 EOF
 }
 
