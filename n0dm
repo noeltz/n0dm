@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #===============================================================================
 # N0DM - Enhanced Yadm Wrapper for Arch Linux
-# Version: 2.0.7
+# Version: 2.0.8
 # Combines Yadm's reliability with smart backups and safety features
 #===============================================================================
 set -euo pipefail
 
 #--- Configuration -------------------------------------------------------------
-readonly N0DM_VERSION="2.0.7"
+readonly N0DM_VERSION="2.0.8"
 readonly N0DM_UPDATE_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm"
 readonly N0DM_CHECKSUM_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm.sha256"
 readonly N0DM_DATA_DIR="${HOME}/.local/share/n0dm"
@@ -546,6 +546,52 @@ n0dm_safe_sync() {
                                     ;;
                                 Q|q)
                                     print_info "Sync cancelled"
+                                    return 0
+                                    ;;
+                            esac
+                        # Check if failed due to merge conflicts
+                        elif echo "$rebase_output" | grep -qi "CONFLICT"; then
+                            print_warn "Merge conflicts detected during rebase!"
+                            # Abort the rebase first to get into a clean state
+                            yadm rebase --abort &>/dev/null || true
+                            
+                            echo
+                            echo "Options:"
+                            echo "  (R)esolve conflicts interactively"
+                            echo "  (M)erge remote instead (aborts rebase, merges instead)"
+                            echo "  (Q)uit"
+                            echo
+                            local conflict_choice=""
+                            while [[ ! "$conflict_choice" =~ ^[RrMmQq]$ ]]; do
+                                echo -n "Choose: "
+                                read -n 1 -r conflict_choice
+                                echo
+                                [[ -z "$conflict_choice" ]] && conflict_choice="Q"
+                            done
+                            
+                            case "$conflict_choice" in
+                                R|r)
+                                    print_info "Running conflict resolver..."
+                                    n0dm_resolve_conflicts
+                                    local resolve_status=$?
+                                    if [[ $resolve_status -ne 0 ]]; then
+                                        print_warn "Conflicts may not be fully resolved"
+                                    fi
+                                    print_info "Continuing with merge instead of rebase..."
+                                    if ! yadm pull --no-rebase 2>&1; then
+                                        print_err "Merge failed"
+                                        return 1
+                                    fi
+                                    ;;
+                                M|m)
+                                    print_info "Merging remote into local instead..."
+                                    if ! yadm pull --no-rebase 2>&1; then
+                                        print_err "Merge failed"
+                                        return 1
+                                    fi
+                                    ;;
+                                Q|q)
+                                    print_info "Sync cancelled. Resolve conflicts with: n0dm conflicts --fix"
                                     return 0
                                     ;;
                             esac
