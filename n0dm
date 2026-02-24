@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #===============================================================================
 # N0DM - Enhanced Yadm Wrapper for Arch Linux
-# Version: 2.0.8
+# Version: 2.0.9
 # Combines Yadm's reliability with smart backups and safety features
 #===============================================================================
 set -euo pipefail
 
 #--- Configuration -------------------------------------------------------------
-readonly N0DM_VERSION="2.0.8"
+readonly N0DM_VERSION="2.0.9"
 readonly N0DM_UPDATE_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm"
 readonly N0DM_CHECKSUM_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm.sha256"
 readonly N0DM_DATA_DIR="${HOME}/.local/share/n0dm"
@@ -636,6 +636,24 @@ n0dm_safe_sync() {
                 fi
             fi
         fi
+    fi
+
+    # Check for unmerged files (conflicts) before pushing
+    local unmerged_files
+    unmerged_files=$(git --git-dir="$yadm_git_dir" diff --name-only --diff-filter=U 2>/dev/null | grep -v "^$" || echo "")
+    if [[ -n "$unmerged_files" ]]; then
+        print_err "Cannot push: unresolved merge conflicts exist"
+        print_info "Conflicted files:"
+        echo "$unmerged_files" | while read -r f; do
+            [[ -n "$f" ]] && print_info "  $f"
+        done
+        echo
+        print_info "Resolve conflicts with: n0dm conflicts --fix"
+        print_info "Or use: n0dm mergetool"
+        if [[ "$safe_mode" == "true" || "$yes_mode" == "true" ]]; then
+            send_notification "n0dm Push Failed" "Unresolved merge conflicts - run 'n0dm conflicts --fix'" "critical"
+        fi
+        return 1
     fi
 
     # Push
