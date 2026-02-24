@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #===============================================================================
 # N0DM - Enhanced Yadm Wrapper for Arch Linux
-# Version: 2.0.0
+# Version: 2.0.1
 # Combines Yadm's reliability with smart backups and safety features
 #===============================================================================
 set -euo pipefail
 
 #--- Configuration -------------------------------------------------------------
-readonly N0DM_VERSION="2.0.0"
+readonly N0DM_VERSION="2.0.1"
 readonly N0DM_UPDATE_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm"
 readonly N0DM_DATA_DIR="${HOME}/.local/share/n0dm"
 readonly N0DM_BACKUP_DIR="${N0DM_DATA_DIR}/backups"
@@ -71,19 +71,27 @@ check_yadm() {
     fi
 }
 
+_YADM_GIT_DIR_CACHED=""
+
 get_yadm_git_dir() {
-    # Try yadm command first (respects YADM_DATA and custom paths)
+    if [[ -n "$_YADM_GIT_DIR_CACHED" ]]; then
+        echo "$_YADM_GIT_DIR_CACHED"
+        return
+    fi
+    
+    local yadm_dir
     if command -v yadm &>/dev/null; then
-        local yadm_dir
         yadm_dir=$(yadm rev-parse --git-dir 2>/dev/null)
         if [[ -n "$yadm_dir" && -d "$yadm_dir" ]]; then
+            _YADM_GIT_DIR_CACHED="$yadm_dir"
             echo "$yadm_dir"
             return
         fi
     fi
     
-    # Fallback to default Arch Linux path
-    echo "${HOME}/.local/share/yadm/repo.git"
+    yadm_dir="${HOME}/.local/share/yadm/repo.git"
+    _YADM_GIT_DIR_CACHED="$yadm_dir"
+    echo "$yadm_dir"
 }
 
 #--- State Management for Smart Backups ----------------------------------------
