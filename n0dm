@@ -618,7 +618,6 @@ n0dm_resolve_conflicts() {
 
 #--- Sync Health Check ---------------------------------------------------------
 n0dm_health() {
-    local fix_mode="${1:-}"
     local yadm_git_dir; yadm_git_dir=$(get_yadm_git_dir)
     local issues=0
     local -A issue_types
@@ -735,25 +734,9 @@ n0dm_health() {
     
     print_err "Health check found issues"
     
-    # If --fix flag, run healing wizard
-    if [[ "$fix_mode" == "--fix" || "$fix_mode" == "-f" ]]; then
-        n0dm_heal "${!issue_types[@]}"
-        return $?
-    fi
-    
-    # Show healing options
-    echo
-    print_notice "I can help fix these issues. Run 'n0dm health --fix' to heal."
-    echo "Available fixes:"
-    [[ -n "${issue_types[no_yadm]:-}" ]] && echo "  (1) Initialize yadm repository"
-    [[ -n "${issue_types[no_remote]:-}" ]] && echo "  (2) Connect to GitHub repository"
-    [[ -n "${issue_types[no_upstream]:-}" ]] && echo "  (3) Push to remote and setup tracking"
-    [[ -n "${issue_types[conflicts]:-}" ]] && echo "  (4) Resolve merge conflicts"
-    [[ -n "${issue_types[no_backups]:-}" ]] && echo "  (5) Create first backup"
-    [[ -n "${issue_types[out_of_sync]:-}" ]] && echo "  (6) Sync with remote"
-    [[ -n "${issue_types[no_timer]:-}" ]] && echo "  (7) Enable auto-sync timer"
-    
-    return 1
+    # Run healing wizard automatically
+    n0dm_heal "${!issue_types[@]}"
+    return $?
 }
 
 #--- Healing Wizard --------------------------------------------------------------
@@ -1677,7 +1660,7 @@ ${BOLD}Enhanced Commands (N0DM specific):${RESET}
   backups                   List available n0dm backups
   cleanup                   Remove old backups per retention policy
   conflicts [--fix]           Check for unresolved merge conflicts
-  health [--fix]             Run health check with healing options (also: doctor)
+  health                     Run health check with automatic healing
   status                    Show yadm status + n0dm backup info
   update                    Check for and install n0dm updates
   mergetool                 Launch configured merge tool for conflicts
@@ -1733,8 +1716,7 @@ ${BOLD}Examples:${RESET}
   n0dm push                              # Push to GitHub
   n0dm list                              # List tracked files
   n0dm status                            # Enhanced status
-  n0dm health                            # Run health check
-  n0dm health --fix                      # Run health check with healing wizard
+  n0dm health                            # Run health check with healing
   n0dm doctor                            # Alias for health
   n0dm sync --safe --yes                 # Safe auto-sync with notifications
   n0dm update                            # Self-update n0dm
