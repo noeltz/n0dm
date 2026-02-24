@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #===============================================================================
 # N0DM - Enhanced Yadm Wrapper for Arch Linux
-# Version: 2.1.1
+# Version: 2.1.2
 # Combines Yadm's reliability with smart backups and safety features
 #===============================================================================
 set -euo pipefail
 
 #--- Configuration -------------------------------------------------------------
-readonly N0DM_VERSION="2.1.1"
+readonly N0DM_VERSION="2.1.2"
 readonly N0DM_UPDATE_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm"
 readonly N0DM_CHECKSUM_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm.sha256"
 readonly N0DM_DATA_DIR="${HOME}/.local/share/n0dm"
@@ -621,7 +621,7 @@ n0dm_safe_sync() {
                 local pull_output
                 if ! pull_output=$(yadm pull 2>&1); then
                     # Check if it's a conflict (unmerged files)
-                    if git --git-dir="$yadm_git_dir" diff --name-only --diff-filter=U 2>/dev/null | grep -q .; then
+                    if yadm diff --name-only --diff-filter=U 2>/dev/null | grep -q .; then
                         print_err "Merge conflicts detected!"
                         print_info "Resolve with: n0dm conflicts --fix"
                         print_info "Or use: n0dm mergetool for visual resolution"
@@ -640,7 +640,7 @@ n0dm_safe_sync() {
 
     # Check for unmerged files (conflicts) before pushing
     local unmerged_files
-    unmerged_files=$(git --git-dir="$yadm_git_dir" diff --name-only --diff-filter=U 2>/dev/null | grep -v "^$" || echo "")
+    unmerged_files=$(yadm diff --name-only --diff-filter=U 2>/dev/null | grep -v "^$" || echo "")
     if [[ -n "$unmerged_files" ]]; then
         print_err "Cannot push: unresolved merge conflicts exist"
         print_info "Conflicted files:"
@@ -756,7 +756,7 @@ n0dm_check_conflicts() {
     local yadm_git_dir; yadm_git_dir=$(get_yadm_git_dir)
 
     local conflicts
-    conflicts=$(git --git-dir="$yadm_git_dir" diff --name-only --diff-filter=U 2>/dev/null)
+    conflicts=$(yadm diff --name-only --diff-filter=U 2>/dev/null)
     
     if [[ -n "$conflicts" ]]; then
         print_err "Unresolved merge conflicts:"
@@ -806,13 +806,13 @@ n0dm_resolve_conflicts() {
         merge_in_progress=true  # After aborting rebase, we might be in merge state
     fi
     
-    # If merge in progress but no conflicts found, try refreshing
+    # Check for conflicts - use yadm for proper working tree handling
     local conflicts
-    conflicts=$(git --git-dir="$yadm_git_dir" diff --name-only --diff-filter=U 2>/dev/null | grep -v "^$" || echo "")
+    conflicts=$(yadm diff --name-only --diff-filter=U 2>/dev/null | grep -v "^$" || echo "")
     
     if [[ -z "$conflicts" ]] && [[ "$merge_in_progress" == "true" ]]; then
         # Try to refresh by checking staging area
-        conflicts=$(git --git-dir="$yadm_git_dir" diff --name-only --diff-filter=U --staged 2>/dev/null | grep -v "^$" || echo "")
+        conflicts=$(yadm diff --name-only --diff-filter=U --staged 2>/dev/null | grep -v "^$" || echo "")
     fi
     
     if [[ -z "$conflicts" ]]; then
@@ -822,7 +822,7 @@ n0dm_resolve_conflicts() {
             if grep -l "<<<<<<< HEAD" "$HOME/$file" &>/dev/null 2>&1; then
                 conflict_files+=("$file")
             fi
-        done < <(git --git-dir="$yadm_git_dir" ls-files -z 2>/dev/null)
+        done < <(yadm ls-files -z 2>/dev/null)
         
         if [[ ${#conflict_files[@]} -gt 0 ]]; then
             conflicts=$(
