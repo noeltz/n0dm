@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #===============================================================================
 # N0DM - Enhanced Yadm Wrapper for Arch Linux
-# Version: 2.0.4
+# Version: 2.0.5
 # Combines Yadm's reliability with smart backups and safety features
 #===============================================================================
 set -euo pipefail
 
 #--- Configuration -------------------------------------------------------------
-readonly N0DM_VERSION="2.0.4"
+readonly N0DM_VERSION="2.0.5"
 readonly N0DM_UPDATE_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm"
 readonly N0DM_CHECKSUM_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm.sha256"
 readonly N0DM_DATA_DIR="${HOME}/.local/share/n0dm"
@@ -438,25 +438,84 @@ n0dm_safe_sync() {
     has_upstream=$(git --git-dir="$yadm_git_dir" rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || echo "")
 
     if [[ -n "$has_upstream" ]]; then
-        print_info "Pulling remote changes..."
-        if ! yadm pull --ff-only 2>/dev/null; then
-            print_warn "Fast-forward pull failed, attempting regular merge..."
-            # Try a regular pull that can create merge commits
-            local pull_output
-            if ! pull_output=$(yadm pull 2>&1); then
-                # Check if it's a conflict (unmerged files)
-                if git --git-dir="$yadm_git_dir" diff --name-only --diff-filter=U 2>/dev/null | grep -q .; then
-                    print_err "Merge conflicts detected!"
-                    print_info "Resolve with: n0dm conflicts --fix"
-                    print_info "Or use: n0dm mergetool for visual resolution"
-                    if [[ "$safe_mode" == "true" || "$yes_mode" == "true" ]]; then
-                        send_notification "n0dm Conflict Detected" "Merge conflicts need resolution" "critical"
+        # Check for divergent branches BEFORE pulling
+        local local_head remote_head divergent=false
+        local_head=$(git --git-dir="$yadm_git_dir" rev-parse HEAD 2>/dev/null || echo "")
+        remote_head=$(git --git-dir="$yadm_git_dir" rev-parse @{u} 2>/dev/null || echo "")
+        
+        if [[ -n "$local_head" && -n "$remote_head" ]]; then
+            local merge_base
+            merge_base=$(git --git-dir="$yadm_git_dir" merge-base HEAD @{u} 2>/dev/null || echo "")
+            if [[ -n "$merge_base" && "$merge_base" != "$local_head" && "$merge_base" != "$remote_head" ]]; then
+                divergent=true
+            fi
+        fi
+        
+        if [[ "$divergent" == "true" ]]; then
+            print_warn "Branches have diverged: local and remote have different commit histories"
+            print_info "Local has $(git --git-dir="$yadm_git_dir" rev-list --count HEAD ^@{u} 2>/dev/null || echo "?") commit(s), remote has $(git --git-dir="$yadm_git_dir" rev-list --count @{u} ^HEAD 2>/dev/null || echo "?")"
+            
+            # In auto mode, notify and exit
+            if [[ "$yes_mode" == "true" || "$safe_mode" == "true" ]]; then
+                print_err "Cannot auto-sync: branches have diverged"
+                print_info "Run 'n0dm sync' interactively to resolve, or choose manually:"
+                echo "  n0dm pull --rebase    # Replay local on top of remote (cleaner)"
+                echo "  n0dm pull --no-rebase # Merge both histories"
+                send_notification "n0dm Sync Failed" "Branches have diverged - run 'n0dm sync' manually to resolve" "critical"
+                return 1
+            fi
+            
+            # Interactive mode: let user choose
+            echo
+            local choice=""
+            while [[ ! "$choice" =~ ^[RrMmQq]$ ]]; do
+                echo -n "Choose: (R)ebase local on remote, (M)erge remote, (Q)uit: "
+                read -n 1 -r choice
+                echo
+                [[ -z "$choice" ]] && choice="Q"
+            done
+            
+            case "$choice" in
+                R|r)
+                    print_info "Rebasing local commits on top of remote..."
+                    if ! yadm pull --rebase 2>&1; then
+                        print_err "Rebase failed"
+                        return 1
                     fi
+                    ;;
+                M|m)
+                    print_info "Merging remote into local..."
+                    if ! yadm pull --no-rebase 2>&1; then
+                        print_err "Merge failed"
+                        return 1
+                    fi
+                    ;;
+                Q|q)
+                    print_info "Sync cancelled. Resolve manually with 'n0dm pull --rebase' or 'n0dm pull --no-rebase'"
+                    return 0
+                    ;;
+            esac
+        else
+            print_info "Pulling remote changes..."
+            if ! yadm pull --ff-only 2>/dev/null; then
+                print_warn "Fast-forward pull failed, attempting regular merge..."
+                # Try a regular pull that can create merge commits
+                local pull_output
+                if ! pull_output=$(yadm pull 2>&1); then
+                    # Check if it's a conflict (unmerged files)
+                    if git --git-dir="$yadm_git_dir" diff --name-only --diff-filter=U 2>/dev/null | grep -q .; then
+                        print_err "Merge conflicts detected!"
+                        print_info "Resolve with: n0dm conflicts --fix"
+                        print_info "Or use: n0dm mergetool for visual resolution"
+                        if [[ "$safe_mode" == "true" || "$yes_mode" == "true" ]]; then
+                            send_notification "n0dm Conflict Detected" "Merge conflicts need resolution" "critical"
+                        fi
+                        return 1
+                    fi
+                    # If pull failed but no conflicts, something else went wrong
+                    print_err "Pull failed: $pull_output"
                     return 1
                 fi
-                # If pull failed but no conflicts, something else went wrong
-                print_err "Pull failed: $pull_output"
-                return 1
             fi
         fi
     fi
