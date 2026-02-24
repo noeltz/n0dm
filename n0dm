@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #===============================================================================
 # N0DM - Enhanced Yadm Wrapper for Arch Linux
-# Version: 1.8.0
+# Version: 1.8.1
 # Combines Yadm's reliability with smart backups and safety features
 #===============================================================================
 set -euo pipefail
 
 #--- Configuration -------------------------------------------------------------
-readonly N0DM_VERSION="1.8.0"
+readonly N0DM_VERSION="1.8.1"
 readonly N0DM_UPDATE_URL="https://raw.githubusercontent.com/noeltz/n0dm/main/n0dm"
 readonly N0DM_DATA_DIR="${HOME}/.local/share/n0dm"
 readonly N0DM_BACKUP_DIR="${N0DM_DATA_DIR}/backups"
@@ -112,6 +112,13 @@ needs_smart_backup() {
         return 0
     fi
     
+    # Check if there are any staged changes (adds, deletes, renames)
+    local staged_count
+    staged_count=$(git --git-dir="$yadm_git_dir" diff --cached --name-only 2>/dev/null | wc -l)
+    if [[ "$staged_count" -gt 0 ]]; then
+        return 0  # Staged changes exist - need backup
+    fi
+    
     # Check if any tracked file was modified after last backup
     cd "$HOME" || return 1
     while IFS= read -r -d '' file; do
@@ -151,6 +158,8 @@ create_backup() {
     cd "$HOME"
     git --git-dir="$yadm_git_dir" --work-tree="$HOME" ls-files -z | \
         while IFS= read -r -d '' file; do
+            # Skip if file doesn't exist (deleted or renamed)
+            [[ ! -e "$file" ]] && continue
             mkdir -p "$backup_dir/$(dirname "$file")"
             cp -a --reflink=auto "$file" "$backup_dir/$file"
         done
@@ -337,6 +346,13 @@ n0dm_safe_sync() {
     if ! yadm remote get-url origin &>/dev/null; then
         print_err "No remote configured. Run 'n0dm connect' first."
         return 1
+    fi
+
+    # Stage all changes first (handles renames, deletions, new files)
+    # Use -A to properly detect renames as git renames (not delete+add)
+    if [[ "$dry_run" != "true" ]]; then
+        print_info "Staging changes..."
+        yadm add -A 2>/dev/null || true
     fi
 
     # Smart backup: only create if tracked files changed AND backup not disabled
