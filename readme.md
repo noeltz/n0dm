@@ -271,6 +271,7 @@ Public/
 |---------|-------------|---------|
 | `n0dm init` | Create a new dotfiles repository | `n0dm init` |
 | `n0dm clone <repo>` | Restore dotfiles from GitHub | `n0dm clone alice/dotfiles` |
+| `n0dm connect [repo]` | Connect to GitHub remote | `n0dm connect alice/dotfiles` |
 | `n0dm track <file>` | Add a file to version control | `n0dm track ~/.vimrc` |
 | `n0dm untrack <file>` | Remove from tracking (keeps file) | `n0dm untrack ~/.cache/file` |
 | `n0dm sync [message]` | **Smart sync**: auto-generates commit message, backup → pull → commit → push | `n0dm sync` or `n0dm sync "Updated aliases"` |
@@ -302,7 +303,8 @@ Public/
 |---------|-------------|---------|
 | `n0dm diff [file]` | See differences between repo and home | `n0dm diff ~/.bashrc` |
 | `n0dm list` | List all tracked files *(passes through to yadm)* | `n0dm list` |
-| `n0dm conflicts` | Check for unresolved merge conflicts | `n0dm conflicts` |
+| `n0dm conflicts [--fix]` | Check for unresolved merge conflicts | `n0dm conflicts` or `n0dm conflicts --fix` |
+| `n0dm mergetool` | Open visual merge tool for conflicts | `n0dm mergetool` |
 | `n0dm health` | Run comprehensive health check | `n0dm health` |
 
 ### 🔄 All Git Commands Work Too!
