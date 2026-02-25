@@ -566,6 +566,76 @@ Choose: (L)ocal, (R)emote, (M)erge, (S)kip, (Q)uit: L
 > git config --global merge.tool meld
 > ```
 
+### 🔄 Handling Divergent Branches
+
+When your local and remote branches have different commit histories (e.g., you synced on Desktop, then made different changes on Laptop), n0dm will detect this and offer options:
+
+```bash
+$ n0dm sync
+⚠ Branches have diverged: local and remote have different commit histories
+➜ Local has 1 commit(s), remote has 7
+
+Choose: (R)ebase local on remote, (M)erge remote, (H)ard reset to remote, (Q)uit: H
+```
+
+| Option | When to Use | What Happens | Risk Level |
+|--------|-------------|--------------|------------|
+| **Rebase** | You want to preserve your local changes on top of remote | Your commits are replayed after remote's commits | 🟢 Low |
+| **Merge** | You want to preserve both histories intact | Creates a merge commit combining both | 🟢 Low |
+| **Hard Reset** | Remote is authoritative, discard all local changes | ⚠️ **Destructive!** All local commits and changes lost | 🔴 High |
+| **Quit** | You want to resolve manually | No changes made, return to prompt | None |
+
+> ⚠️ **Warning:** Hard reset will **permanently discard** all your local commits and unstaged changes. A backup is automatically created before reset, so you can restore if needed.
+
+#### Hard Reset Example
+
+When you choose (H)ard reset, n0dm shows exactly what will be lost:
+
+```bash
+Choose: (H)ard reset to remote, (Q)uit: H
+⚠️  Hard reset: This will DISCARD all local changes!
+
+Upstream branch: origin/main
+
+Local commits that will be lost:
+  f72c9c7 Auto-sync
+
+Unstaged changes (will be discarded):
+  .config/nvim/init.lua
+
+Untracked files (will be preserved):
+  .config/myapp/settings.json
+
+Proceed with hard reset to origin/main? [y/N]: y
+➜ Creating pre-reset backup...
+✓ Backup created: 20260225_143022_pre-hard-reset
+➜ Resetting to origin/main...
+✓ Reset complete!
+Your local state now matches origin/main
+To restore if needed: n0dm restore 20260225_143022_pre-hard-reset
+```
+
+#### Untracked Files and Merging
+
+If you have untracked files that conflict with files from remote, n0dm will offer solutions:
+
+```bash
+error: The following untracked working tree files would be overwritten by merge:
+	.config/noctalia/plugins/simple-notes/BarWidget.qml
+	.config/noctalia/plugins/simple-notes/Main.qml
+	...
+
+Options:
+  (H)ard reset to remote - discard local changes
+  (B)ackup and remove untracked files, then merge
+  (Q)uit
+```
+
+Choose based on your situation:
+- **(H)** - Remote is authoritative, you don't need your local changes
+- **(B)** - You want to keep your untracked files, move them to backup, then merge
+- **(Q)** - Manually resolve the situation
+
 ### 🛑 Safe Defaults for Non-Technical Users
 
 | Feature | Why It Matters |
@@ -590,6 +660,7 @@ Choose: (L)ocal, (R)emote, (M)erge, (S)kip, (Q)uit: L
 | **"Remote has different history"** | Use `n0dm sync --force` for first push |
 | **"File not tracked"** | Run `n0dm track ~/.file` first |
 | **"Merge conflicts"** | Run `n0dm conflicts --fix` or `n0dm mergetool` |
+| **"Branches have diverged"** | Choose (R)ebase, (M)erge, or (H)ard reset when prompted |
 | **"Nothing to commit"** | Check `n0dm status` for staged changes |
 
 ### Quick Diagnostics
