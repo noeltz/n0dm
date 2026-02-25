@@ -62,7 +62,7 @@ trap cleanup_temp_files EXIT INT TERM HUP
 #
 #-------------------------------------------------------------------------------
 with_n0dm_lock() {
-    local lock_timeout=10
+    local lock_timeout=${N0DM_LOCK_TIMEOUT:-10}
     local lock_wait_interval=0.1
 
     # Create lock file if it doesn't exist
@@ -138,6 +138,30 @@ safe_create_backup() {
 
     echo "$backup_output"
     return 0
+}
+
+#--- Safe Backup with Lock Wrapper -----------------------------------------
+safe_create_backup_with_lock() {
+    local label="$1"
+    local silent="${2:-false}"
+
+    local backup_output
+    if ! backup_output=$(with_n0dm_lock create_backup "$label" 2>&1); then
+        [[ "$silent" != "true" ]] && print_err "Failed to create backup: $backup_output"
+        return 1
+    fi
+
+    echo "$backup_output"
+    return 0
+}
+
+#--- Safe Restore with Lock Wrapper -----------------------------------------
+safe_restore_with_lock() {
+    local backup_id="$1"
+
+    if ! with_n0dm_lock restore_backup "$backup_id"; then
+        return $?
+    fi
 }
 
 #--- Helpers -------------------------------------------------------------------
@@ -371,7 +395,7 @@ restore_backup() {
     
     # Create safety backup first (always, regardless of smart logic)
     print_info "Creating safety backup before restore..."
-    if ! safe_create_backup "pre-restore" "true" >/dev/null; then
+    if ! safe_restore_with_lock "pre-restore"; then
         print_err "Cannot proceed without safety backup"
         return 1
     fi
@@ -379,11 +403,14 @@ restore_backup() {
     # Restore files (use --reflink=auto for Btrfs/XFS)
     print_info "Restoring from: $backup_id"
     cd "$backup_dir"
-    find . -type f ! -name '.n0dm-meta' -exec sh -c '
-        rel="${1#./}"
-        [[ -n "$rel" ]] && { mkdir -p "$HOME/$(dirname "$rel")" && cp -a --reflink=auto "$1" "$HOME/$rel"; }
-    ' _ {} \;
-    
+    find . -type f ! -name '.n0dm-meta' -print0 | while IFS= read -r -d '' file; do
+        rel="${file#./}"
+        [[ -n "$rel" ]] && {
+            mkdir -p "$HOME/$(dirname "$rel")"
+            cp -a --reflink=auto "$file" "$HOME/$rel"
+        }
+    done
+
     print_ok "Restore completed!"
     print_info "Run 'n0dm status' or 'yadm status' to verify"
 }
@@ -512,10 +539,12 @@ n0dm_hard_reset_to_remote() {
     modified_files=$(yadm status --porcelain | grep -E "^( M| M|MM)" | awk '{print $2}' || echo "")
     if [[ -n "$modified_files" ]]; then
         print_warn "Unstaged changes (will be discarded):"
-        echo "$modified_files" | head -10 | while read -r f; do
+        local count=0
+        while IFS= read -r f; do
+            [[ $((count++)) -ge 10 ]] && break
             echo "  $f"
-        done
-        [[ $(echo "$modified_files" | wc -l) -gt 10 ]] && print_info "  ... and more"
+        done <<< "$modified_files"
+        [[ $count -gt 10 ]] && print_info "  ... and more"
         echo
     fi
 
@@ -524,10 +553,12 @@ n0dm_hard_reset_to_remote() {
     untracked_files=$(yadm status --porcelain | grep -E "^\?\?" | awk '{print $2}' || echo "")
     if [[ -n "$untracked_files" ]]; then
         print_info "Untracked files (will be preserved):"
-        echo "$untracked_files" | head -10 | while read -r f; do
+        local count=0
+        while IFS= read -r f; do
+            [[ $((count++)) -ge 10 ]] && break
             echo "  $f"
-        done
-        [[ $(echo "$untracked_files" | wc -l) -gt 10 ]] && print_info "  ... and more"
+        done <<< "$untracked_files"
+        [[ $count -gt 10 ]] && print_info "  ... and more"
         echo
     fi
 
@@ -696,9 +727,11 @@ handle_rebase_untracked_conflict() {
     local yadm_git_dir="$2"
 
     print_warn "Rebase failed: untracked files would be overwritten"
-    echo "$rebase_output" | grep -E "^[[:space:]]*\." | head -10 | while read -r f; do
+    local count=0
+    while IFS= read -r f; do
+        [[ $((count++)) -ge 10 ]] && break
         print_info "  $f"
-    done
+    done < <(echo "$rebase_output" | grep -E "^[[:space:]]*\." | head -20)
     echo
     echo "Options:"
     echo "  (M)erge remote into local"
@@ -825,9 +858,11 @@ handle_merge_failure() {
     # Check if failed due to untracked files
     if echo "$pull_output" | grep -qi "untracked working tree files would be overwritten"; then
         print_warn "Merge failed: untracked files conflict with remote"
-        echo "$pull_output" | grep -E "^[[:space:]]*\." | head -10 | while read -r f; do
+        local count=0
+        while IFS= read -r f; do
+            [[ $((count++)) -ge 10 ]] && break
             [[ -n "$f" ]] && print_info "  $f"
-        done
+        done < <(echo "$pull_output" | grep -E "^[[:space:]]*\." | head -20)
         echo
         echo "Options:"
         echo "  (H)ard reset to remote - discard local changes"
@@ -2138,8 +2173,10 @@ self_update() {
     local actual_path; actual_path=$(realpath "$0" 2>/dev/null || echo "$0")
     local script_dir; script_dir=$(dirname "$actual_path")
     local temp_file; temp_file=$(mktemp -p "$script_dir" .n0dm-update.XXXXXX)
+    _N0DM_TEMP_FILES+=("$temp_file")
     local temp_checksum; temp_checksum=$(mktemp -p "$script_dir" .n0dm-checksum.XXXXXX)
-
+    _N0DM_TEMP_FILES+=("$temp_checksum")
+    
     # Download the update
     if ! curl -fsSL "$N0DM_UPDATE_URL" -o "$temp_file" 2>/dev/null; then
         rm -f "$temp_file" "$temp_checksum"
