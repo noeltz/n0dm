@@ -14,6 +14,8 @@ readonly N0DM_DATA_DIR="${HOME}/.local/share/n0dm"
 readonly N0DM_BACKUP_DIR="${N0DM_DATA_DIR}/backups"
 readonly N0DM_CONFIG="${N0DM_DATA_DIR}/config"
 readonly N0DM_STATE_FILE="${N0DM_DATA_DIR}/state"
+readonly _N0DM_LOCK_FILE="${N0DM_DATA_DIR}/.lock"
+_N0DM_TEMP_FILES=()
 MAX_BACKUPS="${N0DM_MAX_BACKUPS:-10}"
 BACKUP_RETENTION_DAYS="${N0DM_BACKUP_RETENTION:-30}"
 
@@ -32,10 +34,110 @@ send_notification() {
     local title="$1"
     local message="$2"
     local urgency="${3:-normal}"
-    
+
     if command -v notify-send &>/dev/null; then
         notify-send -u "$urgency" "$title" "$message" 2>/dev/null || true
     fi
+}
+
+#--- Cleanup Handler ----------------------------------------------------------
+cleanup_temp_files() {
+    local tmp_file
+    for tmp_file in "${_N0DM_TEMP_FILES[@]}"; do
+        [[ -f "$tmp_file" ]] && rm -f "$tmp_file" 2>/dev/null
+    done
+    _N0DM_TEMP_FILES=()
+}
+
+trap cleanup_temp_files EXIT INT TERM HUP
+
+#--- File Locking ---------------------------------------------------------
+# Execute command with advisory file lock (flock)
+#
+# Arguments:
+#   $@ - Command to execute while holding lock
+#
+# Returns:
+#   Exit code of executed command
+#
+#-------------------------------------------------------------------------------
+with_n0dm_lock() {
+    local lock_timeout=10
+    local lock_wait_interval=0.1
+
+    # Create lock file if it doesn't exist
+    [[ ! -f "$_N0DM_LOCK_FILE" ]] && touch "$_N0DM_LOCK_FILE"
+
+    # Try to acquire lock with timeout
+    local elapsed=0
+    while ! flock -n 9; do
+        if ((elapsed >= lock_timeout)); then
+            print_err "Timeout waiting for n0dm lock (another n0dm process may be running)"
+            print_info "If this is a mistake, remove: $_N0DM_LOCK_FILE"
+            return 1
+        fi
+        sleep "$lock_wait_interval"
+        elapsed=$(awk "BEGIN {printf \"%.2f\", $elapsed + $lock_wait_interval}")
+    done 9>"$_N0DM_LOCK_FILE"
+
+    # Execute command with lock held
+    "$@"
+    local ret=$?
+
+    # Lock auto-released on file descriptor close
+    return $ret
+}
+
+#--- Input Validation -------------------------------------------------------
+# Validate string matches safe pattern (no shell metacharacters)
+#
+# Arguments:
+#   $1 - String to validate
+#   $2 - Pattern (default: less restrictive - allows most path-safe chars)
+#
+# Returns:
+#   0 - valid
+#   1 - invalid
+#
+#-------------------------------------------------------------------------------
+validate_safe_string() {
+    local input="$1"
+    local pattern="${2:-[[:alnum:]._/%@:~-]}"
+
+    if [[ ! "$input" =~ $pattern ]]; then
+        print_err "Invalid input: $input"
+        print_info "Contains unsafe characters"
+        return 1
+    fi
+    return 0
+}
+
+#--- Safe Backup Wrapper -----------------------------------------------------
+# Create backup with explicit error checking and return code
+#
+# Arguments:
+#   $1 - Backup label
+#   $2 - Fail silently flag (true/false)
+#
+# Returns:
+#   0 - success
+#   1 - failure
+# Outputs:
+#   backup_label - Full path of created backup (to stdout)
+#
+#-------------------------------------------------------------------------------
+safe_create_backup() {
+    local label="$1"
+    local silent="${2:-false}"
+
+    local backup_output
+    if ! backup_output=$(create_backup "$label" 2>&1); then
+        [[ "$silent" != "true" ]] && print_err "Failed to create backup: $backup_output"
+        return 1
+    fi
+
+    echo "$backup_output"
+    return 0
 }
 
 #--- Helpers -------------------------------------------------------------------
@@ -118,16 +220,21 @@ state_set() {
     local key="$1"
     local value="$2"
     mkdir -p "$(dirname "$N0DM_STATE_FILE")"
-    
-    if grep -q "^${key}=" "$N0DM_STATE_FILE" 2>/dev/null; then
-        # Update existing key (use temp file for BSD compatibility)
-        local tmp_file; tmp_file=$(mktemp)
-        sed "s|^${key}=.*|${key}=${value}|" "$N0DM_STATE_FILE" > "$tmp_file"
-        mv "$tmp_file" "$N0DM_STATE_FILE"
-    else
-        # Add new key
-        echo "${key}=${value}" >> "$N0DM_STATE_FILE"
-    fi
+
+    # Acquire lock for atomic state file operations
+    (
+        flock 9 || exit 1
+        if grep -q "^${key}=" "$N0DM_STATE_FILE" 2>/dev/null; then
+            # Update existing key (use temp file for BSD compatibility)
+            local tmp_file; tmp_file=$(mktemp -t "n0dm-state.XXXXXX")
+            _N0DM_TEMP_FILES+=("$tmp_file")
+            sed "s|^${key}=.*|${key}=${value}|" "$N0DM_STATE_FILE" > "$tmp_file"
+            mv "$tmp_file" "$N0DM_STATE_FILE"
+        else
+            # Add new key
+            echo "${key}=${value}" >> "$N0DM_STATE_FILE"
+        fi
+    ) 9>"$_N0DM_LOCK_FILE"
 }
 
 get_last_backup_epoch() {
@@ -264,8 +371,11 @@ restore_backup() {
     
     # Create safety backup first (always, regardless of smart logic)
     print_info "Creating safety backup before restore..."
-    create_backup "pre-restore" >/dev/null
-    
+    if ! safe_create_backup "pre-restore" "true" >/dev/null; then
+        print_err "Cannot proceed without safety backup"
+        return 1
+    fi
+
     # Restore files (use --reflink=auto for Btrfs/XFS)
     print_info "Restoring from: $backup_id"
     cd "$backup_dir"
@@ -438,7 +548,10 @@ n0dm_hard_reset_to_remote() {
     # Create backup
     print_info "Creating pre-reset backup..."
     local backup_label
-    backup_label=$(create_backup "pre-hard-reset-$(timestamp)" 2>/dev/null || echo "")
+    if ! backup_label=$(safe_create_backup "pre-hard-reset-$(timestamp)" "true"); then
+        print_err "Cannot proceed without safety backup"
+        return 1
+    fi
     if [[ -n "$backup_label" ]]; then
         print_ok "Backup created: $backup_label"
     fi
@@ -460,6 +573,339 @@ n0dm_hard_reset_to_remote() {
         print_info "To restore if needed: n0dm restore $backup_label"
     fi
     return 0
+}
+
+#--- Divergent Branch Handler -----------------------------------------------
+# Interactive resolution when local and remote have diverged
+#
+# Arguments:
+#   $1 - yes_mode flag (true/false)
+#   $2 - safe_mode flag (true/false)
+#   $3 - yadm_git_dir
+#
+# Returns:
+#   0 - resolved successfully
+#   1 - resolution failed or cancelled
+#
+#-------------------------------------------------------------------------------
+handle_divergent_branches() {
+    local yes_mode="$1"
+    local safe_mode="$2"
+    local yadm_git_dir="$3"
+
+    print_warn "Branches have diverged: local and remote have different commit histories"
+    print_info "Local has $(git --git-dir="$yadm_git_dir" rev-list --count HEAD ^@{u} 2>/dev/null || echo "?") commit(s), remote has $(git --git-dir="$yadm_git_dir" rev-list --count @{u} ^HEAD 2>/dev/null || echo "?")"
+
+    # In auto mode, notify and exit
+    if [[ "$yes_mode" == "true" || "$safe_mode" == "true" ]]; then
+        print_err "Cannot auto-sync: branches have diverged"
+        print_info "Run 'n0dm sync' interactively to resolve, or choose manually:"
+        echo "  n0dm pull --rebase          # Replay local on top of remote (cleaner)"
+        echo "  n0dm pull --no-rebase       # Merge both histories"
+        echo "  yadm reset --hard @{u}      # Hard reset to remote (destructive!)"
+        send_notification "n0dm Sync Failed" "Branches have diverged - run 'n0dm sync' manually to resolve" "critical"
+        return 1
+    fi
+
+    # Interactive mode: let user choose
+    echo
+    local choice=""
+    while [[ ! "$choice" =~ ^[RrMmHhQq]$ ]]; do
+        echo -n "Choose: (R)ebase local on remote, (M)erge remote, (H)ard reset to remote, (Q)uit: "
+        read -n 1 -r choice
+        echo
+        [[ -z "$choice" ]] && choice="Q"
+    done
+
+    case "$choice" in
+        R|r) handle_divergent_rebase "$yes_mode" "$safe_mode" "$yadm_git_dir" ;;
+        M|m) handle_divergent_merge "$yadm_git_dir" ;;
+        H|h)
+            if n0dm_hard_reset_to_remote; then
+                print_ok "Sync complete!"
+            else
+                print_info "Reset cancelled or failed"
+                return 1
+            fi
+            ;;
+        Q|q)
+            print_info "Sync cancelled. Resolve manually with:"
+            echo "  n0dm pull --rebase          # Rebase on remote"
+            echo "  n0dm pull --no-rebase       # Merge remote"
+            echo "  yadm reset --hard @{u}      # Hard reset (requires backup first)"
+            return 0
+            ;;
+    esac
+}
+
+#--- Divergent Rebase Handler ----------------------------------------------
+handle_divergent_rebase() {
+    local yes_mode="$1"
+    local safe_mode="$2"
+    local yadm_git_dir="$3"
+
+    print_info "Rebasing local commits on top of remote..."
+    local rebase_output rebase_status=0
+    if ! rebase_output=$(yadm pull --rebase 2>&1); then
+        rebase_status=$?
+        # Check if failed due to untracked files
+        if echo "$rebase_output" | grep -qi "untracked working tree files"; then
+            handle_rebase_untracked_conflict "$rebase_output" "$yadm_git_dir"
+            return $?
+        fi
+        # Check if failed due to merge conflicts
+        if echo "$rebase_output" | grep -qi "CONFLICT"; then
+            handle_rebase_conflict "$yadm_git_dir"
+            return $?
+        fi
+        print_err "Rebase failed: $rebase_output"
+        return 1
+    fi
+    return 0
+}
+
+#--- Divergent Merge Handler ----------------------------------------------
+handle_divergent_merge() {
+    local yadm_git_dir="$1"
+
+    print_info "Merging remote into local..."
+    if ! yadm pull --no-rebase 2>&1; then
+        # Check if merge failed due to conflicts
+        local merge_conflicts
+        merge_conflicts=$(yadm diff --name-only --diff-filter=U 2>/dev/null | grep -v "^$" || echo "")
+        if [[ -n "$merge_conflicts" ]]; then
+            print_err "Merge conflicts detected!"
+            print_info "Conflicted files:"
+            echo "$merge_conflicts" | while read -r f; do
+                [[ -n "$f" ]] && print_info "  $f"
+            done
+            echo
+            print_info "Resolve with: n0dm conflicts --fix"
+            print_info "Or use: n0dm mergetool"
+            return 1
+        fi
+        print_err "Merge failed"
+        return 1
+    fi
+    return 0
+}
+
+#--- Rebase Untracked Conflict Handler ------------------------------------
+handle_rebase_untracked_conflict() {
+    local rebase_output="$1"
+    local yadm_git_dir="$2"
+
+    print_warn "Rebase failed: untracked files would be overwritten"
+    echo "$rebase_output" | grep -E "^[[:space:]]*\." | head -10 | while read -r f; do
+        print_info "  $f"
+    done
+    echo
+    echo "Options:"
+    echo "  (M)erge remote into local"
+    echo "  (B)ackup untracked files, pull, then restore from backup"
+    echo "  (Q)uit"
+    echo
+    local sub_choice=""
+    while [[ ! "$sub_choice" =~ ^[MmBbQq]$ ]]; do
+        echo -n "Choose: "
+        read -n 1 -r sub_choice
+        echo
+        [[ -z "$sub_choice" ]] && sub_choice="Q"
+    done
+
+    case "$sub_choice" in
+        M|m) handle_divergent_merge "$yadm_git_dir" ;;
+        B|b) backup_and_retry_rebase "$rebase_output" "$yadm_git_dir" ;;
+        Q|q)
+            print_info "Sync cancelled"
+            return 0
+            ;;
+    esac
+}
+
+#--- Rebase Conflict Handler -----------------------------------------------
+handle_rebase_conflict() {
+    local yadm_git_dir="$1"
+
+    print_warn "Merge conflicts detected during rebase!"
+    # Abort the rebase first to get into a clean state
+    yadm rebase --abort &>/dev/null || true
+
+    echo
+    echo "Options:"
+    echo "  (R)esolve conflicts interactively"
+    echo "  (M)erge remote instead (aborts rebase, merges instead)"
+    echo "  (Q)uit"
+    echo
+    local conflict_choice=""
+    while [[ ! "$conflict_choice" =~ ^[RrMmQq]$ ]]; do
+        echo -n "Choose: "
+        read -n 1 -r conflict_choice
+        echo
+        [[ -z "$conflict_choice" ]] && conflict_choice="Q"
+    done
+
+    case "$conflict_choice" in
+        R|r)
+            print_info "Running conflict resolver..."
+            n0dm_resolve_conflicts
+            local resolve_status=$?
+            if [[ $resolve_status -eq 0 ]]; then
+                print_ok "Conflicts resolved!"
+                print_info "Run 'n0dm sync' to complete the sync"
+            else
+                print_warn "Conflicts may not be fully resolved"
+                print_info "Run 'n0dm conflicts --fix' to resolve manually"
+            fi
+            return 0
+            ;;
+        M|m)
+            print_info "Merging remote into local instead..."
+            handle_divergent_merge "$yadm_git_dir"
+            return $?
+            ;;
+        Q|q)
+            print_info "Sync cancelled. Resolve conflicts with: n0dm conflicts --fix"
+            return 0
+            ;;
+    esac
+}
+
+#--- Backup and Retry Rebase Handler --------------------------------------
+backup_and_retry_rebase() {
+    local rebase_output="$1"
+    local yadm_git_dir="$2"
+
+    local untracked_files=()
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        f=$(echo "$f" | xargs)  # trim whitespace
+        [[ -n "$f" ]] && untracked_files+=("$f")
+    done < <(echo "$rebase_output" | grep -E "^[[:space:]]*\." | head -20)
+
+    if [[ ${#untracked_files[@]} -gt 0 ]]; then
+        print_info "Creating backup of untracked files..."
+        local backup_label="pre-sync-untracked-$(timestamp)"
+        local backup_dir
+        if ! backup_dir=$(safe_create_backup "$backup_label" "true"); then
+            print_err "Failed to backup untracked files"
+            return 1
+        fi
+
+        # Remove untracked files so rebase can proceed
+        print_info "Removing untracked files to allow rebase..."
+        for f in "${untracked_files[@]}"; do
+            [[ -f "$HOME/$f" ]] && rm -f "$HOME/$f" 2>/dev/null
+        done
+
+        print_info "Retrying rebase..."
+        if ! yadm pull --rebase 2>&1; then
+            print_err "Rebase failed even after removing files"
+            print_info "Restoring backup manually with: n0dm restore $backup_label"
+            return 1
+        fi
+
+        print_ok "Rebase succeeded!"
+        print_info "Untracked files backed up to: $backup_label"
+        print_info "To restore: n0dm restore $backup_label"
+    else
+        print_err "Could not identify untracked files to backup"
+        return 1
+    fi
+    return 0
+}
+
+#--- Merge Failure Path Handler -----------------------------------------
+handle_merge_failure() {
+    local pull_output="$1"
+    local yes_mode="$2"
+    local safe_mode="$3"
+    local yadm_git_dir="$4"
+
+    # Check if failed due to untracked files
+    if echo "$pull_output" | grep -qi "untracked working tree files would be overwritten"; then
+        print_warn "Merge failed: untracked files conflict with remote"
+        echo "$pull_output" | grep -E "^[[:space:]]*\." | head -10 | while read -r f; do
+            [[ -n "$f" ]] && print_info "  $f"
+        done
+        echo
+        echo "Options:"
+        echo "  (H)ard reset to remote - discard local changes"
+        echo "  (B)ackup and remove untracked files, then merge"
+        echo "  (Q)uit"
+        echo
+        local sub_choice=""
+        while [[ ! "$sub_choice" =~ ^[HhBbQq]$ ]]; do
+            echo -n "Choose: "
+            read -n 1 -r sub_choice
+            echo
+            [[ -z "$sub_choice" ]] && sub_choice="Q"
+        done
+
+        case "$sub_choice" in
+            H|h)
+                if n0dm_hard_reset_to_remote; then
+                    print_ok "Reset complete!"
+                else
+                    print_info "Reset cancelled or failed"
+                    return 1
+                fi
+                return 0
+                ;;
+            B|b)
+                # Backup untracked files and retry merge
+                local untracked_files=()
+                while IFS= read -r f; do
+                    [[ -z "$f" ]] && continue
+                    f=$(echo "$f" | xargs)
+                    [[ -n "$f" ]] && untracked_files+=("$f")
+                done < <(echo "$pull_output" | grep -E "^[[:space:]]*\." | head -20)
+
+                if [[ ${#untracked_files[@]} -gt 0 ]]; then
+                    print_info "Creating backup of untracked files..."
+                    local backup_label="pre-sync-untracked-$(timestamp)"
+                    local backup_dir
+                    if ! backup_dir=$(safe_create_backup "$backup_label" "true"); then
+                        print_err "Failed to backup untracked files"
+                        return 1
+                    fi
+
+                    print_info "Removing untracked files to allow merge..."
+                    for f in "${untracked_files[@]}"; do
+                        [[ -f "$HOME/$f" ]] && rm -f "$HOME/$f" 2>/dev/null
+                    done
+
+                    print_info "Retrying merge..."
+                    if ! yadm pull --no-rebase 2>&1; then
+                        print_err "Merge failed even after removing files"
+                        print_info "Restoring backup: n0dm restore $backup_label"
+                        return 1
+                    fi
+                    print_ok "Merge succeeded!"
+                fi
+                return 0
+                ;;
+            Q|q)
+                print_info "Sync cancelled"
+                return 0
+                ;;
+        esac
+    fi
+
+    # Check if it's a conflict (unmerged files)
+    if yadm diff --name-only --diff-filter=U 2>/dev/null | grep -q .; then
+        print_err "Merge conflicts detected!"
+        print_info "Resolve with: n0dm conflicts --fix"
+        print_info "Or use: n0dm mergetool for visual resolution"
+        if [[ "$safe_mode" == "true" || "$yes_mode" == "true" ]]; then
+            send_notification "n0dm Conflict Detected" "Merge conflicts need resolution" "critical"
+        fi
+        return 1
+    fi
+
+    # If pull failed but no conflicts, something else went wrong
+    print_err "Pull failed: $pull_output"
+    return 1
 }
 
 #--- Safe Sync Wrapper with Smart Backup ---------------------------------------
@@ -493,7 +939,10 @@ n0dm_safe_sync() {
     if [[ "$no_backup" != "true" && "$dry_run" != "true" ]]; then
         if needs_smart_backup; then
             print_info "Changes detected in tracked files, creating pre-sync backup..."
-            create_backup "pre-sync" >/dev/null
+            if ! safe_create_backup "pre-sync" "true" >/dev/null; then
+                print_err "Failed to create backup, skipping sync"
+                return 1
+            fi
         else
             print_info "No changes in tracked files, skipping backup"
         fi
@@ -563,186 +1012,15 @@ n0dm_safe_sync() {
                 print_info "Run 'n0dm sync' interactively to resolve, or choose manually:"
                 echo "  n0dm pull --rebase          # Replay local on top of remote (cleaner)"
                 echo "  n0dm pull --no-rebase       # Merge both histories"
-                echo "  yadm reset --hard origin/main # Hard reset to remote (destructive!)"
+                echo "  yadm reset --hard @{u}      # Hard reset to remote (destructive!)"
                 send_notification "n0dm Sync Failed" "Branches have diverged - run 'n0dm sync' manually to resolve" "critical"
                 return 1
             fi
-            
-            # Interactive mode: let user choose
-            echo
-            local choice=""
-            while [[ ! "$choice" =~ ^[RrMmHhQq]$ ]]; do
-                echo -n "Choose: (R)ebase local on remote, (M)erge remote, (H)ard reset to remote, (Q)uit: "
-                read -n 1 -r choice
-                echo
-                [[ -z "$choice" ]] && choice="Q"
-            done
-            
-            case "$choice" in
-                R|r)
-                    print_info "Rebasing local commits on top of remote..."
-                    local rebase_output rebase_status=0
-                    if ! rebase_output=$(yadm pull --rebase 2>&1); then
-                        rebase_status=$?
-                        # Check if failed due to untracked files
-                        if echo "$rebase_output" | grep -qi "untracked working tree files"; then
-                            print_warn "Rebase failed: untracked files would be overwritten"
-                            echo "$rebase_output" | grep -E "^[[:space:]]*\." | head -10 | while read -r f; do
-                                print_info "  $f"
-                            done
-                            echo
-                            echo "Options:"
-                            echo "  (M)erge remote into local"
-                            echo "  (B)ackup untracked files, pull, then restore from backup"
-                            echo "  (Q)uit"
-                            echo
-                            local sub_choice=""
-                            while [[ ! "$sub_choice" =~ ^[MmBbQq]$ ]]; do
-                                echo -n "Choose: "
-                                read -n 1 -r sub_choice
-                                echo
-                                [[ -z "$sub_choice" ]] && sub_choice="Q"
-                            done
-                            
-                            case "$sub_choice" in
-                                M|m)
-                                    print_info "Merging remote into local..."
-                                    if ! yadm pull --no-rebase 2>&1; then
-                                        print_err "Merge failed"
-                                        return 1
-                                    fi
-                                    ;;
-                                B|b)
-                                    # Extract list of untracked files to backup
-                                    local untracked_files=()
-                                    while IFS= read -r f; do
-                                        [[ -z "$f" ]] && continue
-                                        f=$(echo "$f" | xargs)  # trim whitespace
-                                        [[ -n "$f" ]] && untracked_files+=("$f")
-                                    done < <(echo "$rebase_output" | grep -E "^[[:space:]]*\." | head -20)
-                                    
-                                    if [[ ${#untracked_files[@]} -gt 0 ]]; then
-                                        print_info "Creating backup of untracked files..."
-                                        local backup_label="pre-sync-untracked-$(timestamp)"
-                                        local backup_dir; backup_dir=$(create_backup "$backup_label" 2>/dev/null || echo "")
-                                        
-                                        # Remove untracked files so rebase can proceed
-                                        print_info "Removing untracked files to allow rebase..."
-                                        for f in "${untracked_files[@]}"; do
-                                            [[ -f "$HOME/$f" ]] && rm -f "$HOME/$f" 2>/dev/null
-                                        done
-                                        
-                                        print_info "Retrying rebase..."
-                                        if ! yadm pull --rebase 2>&1; then
-                                            print_err "Rebase failed even after removing files"
-                                            print_info "Restoring backup manually with: n0dm restore $backup_label"
-                                            return 1
-                                        fi
-                                        
-                                        print_ok "Rebase succeeded!"
-                                        print_info "Untracked files backed up to: $backup_label"
-                                        print_info "To restore: n0dm restore $backup_label"
-                                    else
-                                        print_err "Could not identify untracked files to backup"
-                                        return 1
-                                    fi
-                                    ;;
-                                Q|q)
-                                    print_info "Sync cancelled"
-                                    return 0
-                                    ;;
-                            esac
-                        # Check if failed due to merge conflicts
-                        elif echo "$rebase_output" | grep -qi "CONFLICT"; then
-                            print_warn "Merge conflicts detected during rebase!"
-                            # Abort the rebase first to get into a clean state
-                            yadm rebase --abort &>/dev/null || true
-                            
-                            echo
-                            echo "Options:"
-                            echo "  (R)esolve conflicts interactively"
-                            echo "  (M)erge remote instead (aborts rebase, merges instead)"
-                            echo "  (Q)uit"
-                            echo
-                            local conflict_choice=""
-                            while [[ ! "$conflict_choice" =~ ^[RrMmQq]$ ]]; do
-                                echo -n "Choose: "
-                                read -n 1 -r conflict_choice
-                                echo
-                                [[ -z "$conflict_choice" ]] && conflict_choice="Q"
-                            done
-                            
-                            case "$conflict_choice" in
-                                R|r)
-                                    print_info "Running conflict resolver..."
-                                    n0dm_resolve_conflicts
-                                    local resolve_status=$?
-                                    if [[ $resolve_status -eq 0 ]]; then
-                                        print_ok "Conflicts resolved!"
-                                        print_info "Run 'n0dm sync' to complete the sync"
-                                    else
-                                        print_warn "Conflicts may not be fully resolved"
-                                        print_info "Run 'n0dm conflicts --fix' to resolve manually"
-                                    fi
-                                    return 0
-                                    ;;
-                                M|m)
-                                    print_info "Merging remote into local instead..."
-                                    if ! yadm pull --no-rebase 2>&1; then
-                                        print_err "Merge failed"
-                                        return 1
-                                    fi
-                                    ;;
-                                Q|q)
-                                    print_info "Sync cancelled. Resolve conflicts with: n0dm conflicts --fix"
-                                    return 0
-                                    ;;
-                            esac
-                        else
-                            print_err "Rebase failed: $rebase_output"
-                            return 1
-                        fi
-                    fi
-                    ;;
-                M|m)
-                    print_info "Merging remote into local..."
-                    if ! yadm pull --no-rebase 2>&1; then
-                        # Check if merge failed due to conflicts
-                        local merge_conflicts
-                        merge_conflicts=$(yadm diff --name-only --diff-filter=U 2>/dev/null | grep -v "^$" || echo "")
-                        if [[ -n "$merge_conflicts" ]]; then
-                            print_err "Merge conflicts detected!"
-                            print_info "Conflicted files:"
-                            echo "$merge_conflicts" | while read -r f; do
-                                [[ -n "$f" ]] && print_info "  $f"
-                            done
-                            echo
-                            print_info "Resolve with: n0dm conflicts --fix"
-                            print_info "Or use: n0dm mergetool"
-                            return 1
-                        fi
-                        print_err "Merge failed"
-                        return 1
-                    fi
-                    ;;
-                H|h)
-                    print_info "Hard resetting to remote..."
-                    if n0dm_hard_reset_to_remote; then
-                        # Reset succeeded, sync is complete
-                        print_ok "Sync complete!"
-                    else
-                        print_info "Reset cancelled or failed"
-                        return 1
-                    fi
-                    ;;
-                Q|q)
-                    print_info "Sync cancelled. Resolve manually with:"
-                    echo "  n0dm pull --rebase          # Rebase on remote"
-                    echo "  n0dm pull --no-rebase       # Merge remote"
-                    echo "  yadm reset --hard @{u}      # Hard reset (requires backup first)"
-                    return 0
-                    ;;
-            esac
+
+            # Interactive mode: handle divergent branches
+            if ! handle_divergent_branches "$yes_mode" "$safe_mode" "$yadm_git_dir"; then
+                return 1
+            fi
         else
             print_info "Pulling remote changes..."
             if ! yadm pull --ff-only 2>/dev/null; then
@@ -750,84 +1028,8 @@ n0dm_safe_sync() {
                 # Try a regular pull that can create merge commits
                 local pull_output
                 if ! pull_output=$(yadm pull 2>&1); then
-                    # Check if it's a conflict (unmerged files)
-                    if yadm diff --name-only --diff-filter=U 2>/dev/null | grep -q .; then
-                        print_err "Merge conflicts detected!"
-                        print_info "Resolve with: n0dm conflicts --fix"
-                        print_info "Or use: n0dm mergetool for visual resolution"
-                        if [[ "$safe_mode" == "true" || "$yes_mode" == "true" ]]; then
-                            send_notification "n0dm Conflict Detected" "Merge conflicts need resolution" "critical"
-                        fi
-                        return 1
-                    fi
-                    # Check if failed due to untracked files
-                    if echo "$pull_output" | grep -qi "untracked working tree files would be overwritten"; then
-                        print_warn "Merge failed: untracked files conflict with remote"
-                        echo "$pull_output" | grep -E "^[[:space:]]*\." | head -10 | while read -r f; do
-                            [[ -n "$f" ]] && print_info "  $f"
-                        done
-                        echo
-                        print_info "Options:"
-                        echo "  (H)ard reset to remote - discard local changes"
-                        echo "  (B)ackup and remove untracked files, then merge"
-                        echo "  (Q)uit"
-                        echo
-                        local sub_choice=""
-                        while [[ ! "$sub_choice" =~ ^[HhBbQq]$ ]]; do
-                            echo -n "Choose: "
-                            read -n 1 -r sub_choice
-                            echo
-                            [[ -z "$sub_choice" ]] && sub_choice="Q"
-                        done
-
-                        case "$sub_choice" in
-                            H|h)
-                                if n0dm_hard_reset_to_remote; then
-                                    print_ok "Reset complete!"
-                                else
-                                    print_info "Reset cancelled or failed"
-                                    return 1
-                                fi
-                                return 0
-                                ;;
-                            B|b)
-                                # Backup untracked files and retry merge
-                                local untracked_files=()
-                                while IFS= read -r f; do
-                                    [[ -z "$f" ]] && continue
-                                    f=$(echo "$f" | xargs)
-                                    [[ -n "$f" ]] && untracked_files+=("$f")
-                                done < <(echo "$pull_output" | grep -E "^[[:space:]]*\." | head -20)
-
-                                if [[ ${#untracked_files[@]} -gt 0 ]]; then
-                                    print_info "Creating backup of untracked files..."
-                                    local backup_label="pre-sync-untracked-$(timestamp)"
-                                    local backup_dir; backup_dir=$(create_backup "$backup_label" 2>/dev/null || echo "")
-
-                                    print_info "Removing untracked files to allow merge..."
-                                    for f in "${untracked_files[@]}"; do
-                                        [[ -f "$HOME/$f" ]] && rm -f "$HOME/$f" 2>/dev/null
-                                    done
-
-                                    print_info "Retrying merge..."
-                                    if ! yadm pull --no-rebase 2>&1; then
-                                        print_err "Merge failed even after removing files"
-                                        print_info "Restoring backup: n0dm restore $backup_label"
-                                        return 1
-                                    fi
-                                    print_ok "Merge succeeded!"
-                                fi
-                                return 0
-                                ;;
-                            Q|q)
-                                print_info "Sync cancelled"
-                                return 0
-                                ;;
-                        esac
-                    fi
-                    # If pull failed but no conflicts, something else went wrong
-                    print_err "Pull failed: $pull_output"
-                    return 1
+                    handle_merge_failure "$pull_output" "$yes_mode" "$safe_mode" "$yadm_git_dir"
+                    return $?
                 fi
             fi
         fi
@@ -867,7 +1069,13 @@ n0dm_safe_sync() {
                 remote_url=$(git --git-dir="$yadm_git_dir" remote get-url origin 2>/dev/null)
                 local repo_name
                 repo_name=$(echo "$remote_url" | sed 's|.*/\([^/]*\)\.git$|\1|' | sed 's|^git@github\.com:||')
-                
+
+                # Validate repo_name for safe characters
+                if ! validate_safe_string "$repo_name" "[[:alnum:]._-]"; then
+                    repo_name="dotfiles-$(date +%s)"
+                    print_warn "Using generated repo name: $repo_name"
+                fi
+
                 # Offer to create repo if gh is available
                 if command -v gh &>/dev/null; then
                     echo
@@ -878,24 +1086,24 @@ n0dm_safe_sync() {
                         read -p "Create GitHub repo and push? [Y/n] " -n 1 -r auto_confirm
                         echo
                     fi
-                    
+
                     if [[ $auto_confirm =~ ^[Yy]$ || "$auto_confirm" == "" ]]; then
                         print_info "Creating repository on GitHub..."
                         if gh repo create "$repo_name" --public --source=. --push 2>&1; then
                             print_ok "Repository created and pushed successfully!"
                         else
                             print_err "Failed to create repository. It may already exist on GitHub."
-                            print_info "Try: gh repo create $repo_name --public --push"
+                            print_info "Try: gh repo create \"$repo_name\" --public --push"
                         fi
                     else
                         echo
                         print_info "Create it manually:"
-                        echo "  gh repo create $repo_name --public --push"
+                        echo "  gh repo create \"$repo_name\" --public --push"
                         echo "Or visit: $remote_url"
                     fi
                 else
                     print_info "Create it on GitHub:"
-                    echo "  gh repo create $repo_name --public --push"
+                    echo "  gh repo create \"$repo_name\" --public --push"
                     echo "Or visit: $remote_url"
                 fi
             elif echo "$push_output" | grep -qi "rejected"; then
